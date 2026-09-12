@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using MediaBrowser.Common.Plugins;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Model.Plugins;
@@ -22,7 +23,53 @@ namespace Jellyfin.Plugin.AnimeMultiSource
             : base(applicationPaths, xmlSerializer)
         {
             Instance = this;
+            MigrateLegacyConfiguration(applicationPaths, logger);
             CleanupStaleVersionFolders(applicationPaths, logger);
+        }
+
+        private void MigrateLegacyConfiguration(IApplicationPaths applicationPaths, ILogger logger)
+        {
+            try
+            {
+                var currentPath = ConfigurationFilePath;
+                if (File.Exists(currentPath) || !Directory.Exists(applicationPaths.PluginConfigurationsPath))
+                {
+                    return;
+                }
+
+                var candidates = Directory.GetFiles(applicationPaths.PluginConfigurationsPath, "*.xml")
+                    .Where(path =>
+                    {
+                        var fileName = Path.GetFileNameWithoutExtension(path);
+                        return fileName.Contains("AnimeMultiSource", StringComparison.OrdinalIgnoreCase)
+                            || fileName.Contains("Anime Multi Source", StringComparison.OrdinalIgnoreCase);
+                    });
+
+                foreach (var candidate in candidates)
+                {
+                    try
+                    {
+                        var recovered = XmlSerializer.DeserializeFromFile(typeof(Configuration.PluginConfiguration), candidate)
+                            as Configuration.PluginConfiguration;
+                        if (recovered == null)
+                        {
+                            continue;
+                        }
+
+                        XmlSerializer.SerializeToFile(recovered, currentPath);
+                        logger.LogInformation("Migrated Anime Multi Source configuration from {OldPath} to {NewPath}.", candidate, currentPath);
+                        return;
+                    }
+                    catch (Exception ex)
+                    {
+                        logger.LogDebug(ex, "Configuration file {Candidate} was not compatible with the current plugin configuration type.", candidate);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Failed to search for a legacy Anime Multi Source configuration.");
+            }
         }
 
         // Jellyfin's plugin updater installs a new version alongside the old one instead of

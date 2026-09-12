@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.0.7.1 - 2026-09-12
+- Preserve compatible Anime Multi Source settings when upgrading from a package with a legacy configuration filename.
+
 ## 1.0.7.0 - 2026-09-12
 - Fork release targeting Jellyfin 12 / net10.0.
 - Added robust manual search fallbacks through Jikan/MAL and Kitsu when AniList is unavailable.
