@@ -198,7 +198,10 @@ namespace Jellyfin.Plugin.AnimeMultiSource
             {
                 new PluginPageInfo
                 {
-                    Name = Name,
+                    // Keep the original route stable; Jellyfin uses this value when matching
+                    // configuration pages to the plugin details view.
+                    Name = "AnimeMultiSource",
+                    DisplayName = Name,
                     EmbeddedResourcePath = $"{GetType().Namespace}.Configuration.configPage.html"
                 }
             };

@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.0.7.3 - 2026-09-12
+- Keep the legacy `AnimeMultiSource` configuration-page route while displaying the friendly `Anime Multi Source` name, restoring Jellyfin v12 configuration-page discovery.
+
 ## 1.0.7.2 - 2026-09-12
 - Align runtime plugin and configuration-page names with the Jellyfin catalog identity so the Configure button is exposed.
 
