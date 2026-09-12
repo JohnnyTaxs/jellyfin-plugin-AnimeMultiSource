@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.0.7.2 - 2026-09-12
+- Align runtime plugin and configuration-page names with the Jellyfin catalog identity so the Configure button is exposed.
+
 ## 1.0.7.1 - 2026-09-12
 - Preserve compatible Anime Multi Source settings when upgrading from a package with a legacy configuration filename.
 

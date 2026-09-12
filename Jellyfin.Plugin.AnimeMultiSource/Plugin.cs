@@ -102,7 +102,10 @@ namespace Jellyfin.Plugin.AnimeMultiSource
                     }
 
                     var folderName = Path.GetFileName(directory);
-                    if (string.IsNullOrEmpty(folderName) || !folderName.StartsWith(Name, StringComparison.OrdinalIgnoreCase))
+                    if (string.IsNullOrEmpty(folderName)
+                        || (!folderName.StartsWith(Name, StringComparison.OrdinalIgnoreCase)
+                            && !folderName.StartsWith("AnimeMultiSource", StringComparison.OrdinalIgnoreCase)
+                            && !folderName.StartsWith("Jellyfin.Plugin.AnimeMultiSource", StringComparison.OrdinalIgnoreCase)))
                     {
                         continue;
                     }
@@ -195,7 +198,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource
             {
                 new PluginPageInfo
                 {
-                    Name = Constants.PluginName,
+                    Name = Name,
                     EmbeddedResourcePath = $"{GetType().Namespace}.Configuration.configPage.html"
                 }
             };

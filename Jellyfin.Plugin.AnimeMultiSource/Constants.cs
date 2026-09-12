@@ -2,7 +2,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource
 {
     public static class Constants
     {
-        public const string PluginName = "AnimeMultiSource";
+        public const string PluginName = "Anime Multi Source";
         public const string PluginGuid = "8eca6f17-71fe-4309-a670-3cae083f22bd";
         public const string TvdbProjectApiKey = "7f7eed88-2530-4f84-8ee7-f154471b8f87";
 
