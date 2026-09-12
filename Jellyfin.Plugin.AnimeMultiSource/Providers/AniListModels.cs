@@ -13,15 +13,30 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
     {
         [JsonPropertyName("Media")]
         public AniListMedia? Media { get; set; }
+
+        [JsonPropertyName("Page")]
+        public AniListPage? Page { get; set; }
+    }
+
+    public class AniListPage
+    {
+        [JsonPropertyName("media")]
+        public List<AniListMedia>? Media { get; set; }
     }
 
     public class AniListMedia
     {
+        [JsonIgnore]
+        public string? KitsuId { get; set; }
+
         [JsonPropertyName("id")]
         public int Id { get; set; }
 
         [JsonPropertyName("title")]
         public AniListTitle? Title { get; set; }
+
+        [JsonPropertyName("coverImage")]
+        public AniListImage? CoverImage { get; set; }
 
         [JsonPropertyName("description")]
         public string? Description { get; set; }

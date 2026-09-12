@@ -12,38 +12,39 @@ Remote anime metadata, tags, artwork and people for Jellyfin using multiple sour
 - Persistent caches: AniDB and AniList responses cached up to 5 days and persisted to disk to survive restarts.
 
 ## Requirements
-- Jellyfin 10.11.3+ (net9.0 plugin, ABI 10.11.3.0)
+- Jellyfin 12.0.0+ (net10.0 plugin, ABI 12.0.0.0)
 - API keys (all optional but recommended):
   - Fanart.tv personal API key (logos/backdrops)
   - AnimeSchedule.net API key (Upcoming episodes; get one from your AnimeSchedule.net account settings, API tab)
 
-### .plexmatch files (strongly recommended)
-- The plugin honors `.plexmatch` files to improve ID resolution. Supported fields: `title`, `year`, `tvdbid`, `imdbid`, and `anilistid`/`malid`.
+### .plexmatch files (required)
+- The plugin requires a `.plexmatch` file beside each series folder for reliable metadata and image-provider ID resolution. Supported fields: `title`, `year`, `tvdbid`, `imdbid`, `tmdbid`, and `anilistid`/`malid`.
 - `anilistid`/`malid` let a series resolve directly off AniList/MAL even when Fribb hasn't cross-referenced it to a TVDB/IMDb id yet (common for brand-new simulcasts) - add one of these instead of `tvdbid`/`imdbid` for those titles.
 - Sonarr can generate `.plexmatch` automatically: go to **Settings → Metadata**, enable **Plex**, and tick the option to write `.plexmatch` files.
-- If you already have `.plexmatch` files in your library, keep them alongside the series folders—no further setup needed.
+- Keep each `.plexmatch` file alongside its series folder—no further setup is needed.
 
 ## Installation
 **Option 1: Plugin repository (recommended)**
 1) Jellyfin Dashboard → Plugins → Repositories.
-2) Add repository: Name `AnimeMultiSource`, URL `https://raw.githubusercontent.com/webbster64/jellyfin-plugin-AnimeMultiSource/main/manifest.json`.
+2) Add repository: Name `AnimeMultiSource`, URL `https://raw.githubusercontent.com/JohnnyTaxs/jellyfin-plugin-AnimeMultiSource/main/manifest.json`.
 3) Go to Catalog, find **Anime Multi Source**, click Install.
 4) Restart Jellyfin (then hard refresh browser: Ctrl+Shift+R / Cmd+Shift+R).
 
 **Option 2: Manual install from release**
-1) Download the latest `AnimeMultiSource_v*.zip` from the [releases](https://github.com/webbster64/jellyfin-plugin-AnimeMultiSource/releases).
+1) Download the latest `AnimeMultiSource_v*.zip` from the [releases](https://github.com/JohnnyTaxs/jellyfin-plugin-AnimeMultiSource/releases).
 2) Extract into your Jellyfin `plugins/AnimeMultiSource/` folder.
 3) Restart Jellyfin.
 
 **Option 3: Build from source**
 1) `dotnet build` (or `dotnet publish -c Release`) in the repo root.
-2) Copy the contents of `Jellyfin.Plugin.AnimeMultiSource/bin/<Configuration>/net9.0/` into your Jellyfin `plugins/AnimeMultiSource/` folder.
+2) Copy the contents of `Jellyfin.Plugin.AnimeMultiSource/bin/<Configuration>/net10.0/` into your Jellyfin `plugins/AnimeMultiSource/` folder.
 3) Restart Jellyfin.
 
 ## Configuration
 Open **Dashboard -> Plugins -> Anime Multi Source**:
 - Enter Fanart.tv personal key (for logos/backdrops).
-- Set AniDB client name/version.
+- Optionally enter a TMDB API key to enable episode-still fallback after TVDB, Jikan/MAL, and Kitsu.
+- AniDB client name/version are internal identifiers used by the plugin's legacy AniDB HTTP API integration. They default to `mediabrowser` / `1`; there is no separate AniDB client to install or configure.
 - Configure backdrop limits/quality and enable/disable sources as desired.
 - Approved genres: prefilled with a curated list; edit or clear as needed (one genre per line).
 
@@ -68,6 +69,7 @@ A newly-aired anime's AniDB/MAL tags and genres are often thin at first - commun
 - AniList: spaced to ~30 req/min; cached 5 days; persisted on disk.
 - AniDB: soft daily cap with slow mode; ban/limit responses trigger backoff; cached 5 days; persisted on disk.
 - Jikan/MAL: spaced (~2.5s) with retry-after; lightweight caching via AniList reuse where possible.
+- TMDB: conservatively spaced to 4 requests/second and retries HTTP 429 responses. TMDB's free API access has no fixed published quota, but dynamic limits around 40 requests/second may apply and can change.
 - Persistent cache file: `provider-cache.json` under the plugin data folder (fallback to `AppContext.BaseDirectory/AnimeMultiSourceCache`). Entries older than 5 days are discarded automatically.
 
 ## Usage notes

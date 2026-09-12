@@ -8,6 +8,7 @@ using System.Net.Http;
 using System.IO.Compression;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Xml;
 using System.Xml.Serialization;
@@ -140,6 +141,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                                 english
                                 native
                             }
+                            coverImage { large }
                             description
                             genres
                             duration
@@ -206,6 +208,170 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             }
 
             return null;
+        }
+
+        public async Task<List<AniListMedia>> SearchAniListAnimeAsync(string query, CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrWhiteSpace(query))
+            {
+                return new List<AniListMedia>();
+            }
+
+            try
+            {
+                const string searchQuery = @"
+                    query ($search: String) {
+                        Page(perPage: 20) {
+                            media(search: $search, type: ANIME, sort: SEARCH_MATCH) {
+                                id
+                                idMal
+                                title { romaji english native }
+                                coverImage { large }
+                                startDate { year }
+                            }
+                        }
+                    }";
+
+                var request = new
+                {
+                    query = searchQuery,
+                    variables = new { search = query }
+                };
+
+                await EnforceAniListRateLimitAsync();
+                using var content = new StringContent(
+                    JsonSerializer.Serialize(request),
+                    System.Text.Encoding.UTF8,
+                    "application/json");
+                using var response = await _httpClient.PostAsync("https://graphql.anilist.co", content, cancellationToken);
+                if (!response.IsSuccessStatusCode)
+                {
+                    _logger.LogWarning("AniList search returned status code: {StatusCode}; trying Jikan/MAL", response.StatusCode);
+                }
+                else
+                {
+                    var json = await response.Content.ReadAsStringAsync(cancellationToken);
+                    var aniListResults = JsonSerializer.Deserialize<AniListResponse>(json)?.Data?.Page?.Media;
+                    if (aniListResults?.Count > 0)
+                    {
+                        return aniListResults;
+                    }
+
+                    _logger.LogWarning("AniList search returned no results for {Query}; trying Jikan/MAL", query);
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error searching AniList for {Query}", query);
+            }
+
+            return await SearchJikanAnimeAsync(query, cancellationToken);
+
+        }
+
+        private async Task<List<AniListMedia>> SearchJikanAnimeAsync(string query, CancellationToken cancellationToken)
+            {
+                try
+                {
+                    var url = $"https://api.jikan.moe/v4/anime?q={Uri.EscapeDataString(query)}&limit=20&sfw=true";
+                    await EnforceJikanRateLimitAsync();
+                    using var response = await _httpClient.GetAsync(url, cancellationToken);
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        _logger.LogWarning("Jikan search returned status code: {StatusCode}; trying Kitsu", response.StatusCode);
+                    }
+                    else
+                    {
+                        var json = await response.Content.ReadAsStringAsync(cancellationToken);
+                        var data = JsonSerializer.Deserialize<JikanSearchResponse>(json)?.Data;
+                        var results = data?.Select(anime => new AniListMedia
+                        {
+                            IdMal = anime.MalId,
+                            Title = new AniListTitle
+                            {
+                                English = anime.TitleEnglish,
+                                Romaji = anime.Title,
+                                Native = anime.TitleJapanese
+                            },
+                            StartDate = anime.Aired?.From.HasValue == true
+                                ? new AniListDate { Year = anime.Aired.From.Value.Year }
+                                : anime.Year.HasValue
+                                    ? new AniListDate { Year = anime.Year.Value }
+                                    : null,
+                            CoverImage = new AniListImage
+                            {
+                                Large = anime.Images?.WebP?.ImageUrl ?? anime.Images?.Jpg?.ImageUrl
+                            }
+                        }).ToList();
+
+                        if (results?.Count > 0)
+                        {
+                            return results;
+                        }
+                    }
+
+                    return await SearchKitsuAnimeAsync(query, cancellationToken);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error searching Jikan for {Query}", query);
+                    return await SearchKitsuAnimeAsync(query, cancellationToken);
+                }
+            }
+
+        private async Task<List<AniListMedia>> SearchKitsuAnimeAsync(string query, CancellationToken cancellationToken)
+        {
+            try
+            {
+                var encodedQuery = Uri.EscapeDataString(query);
+                var url = $"https://kitsu.io/api/edge/anime?filter%5Btext%5D={encodedQuery}&page%5Blimit%5D=20";
+                using var request = new HttpRequestMessage(HttpMethod.Get, url);
+                request.Headers.TryAddWithoutValidation("User-Agent", "Jellyfin-AnimeMultiSource-Plugin/1.0");
+                using var response = await _httpClient.SendAsync(request, cancellationToken);
+                if (!response.IsSuccessStatusCode)
+                {
+                    _logger.LogWarning("Kitsu search returned status code: {StatusCode}", response.StatusCode);
+                    return new List<AniListMedia>();
+                }
+
+                var json = await response.Content.ReadAsStringAsync(cancellationToken);
+                var data = JsonSerializer.Deserialize<KitsuSearchResponse>(json)?.Data;
+                return data?.Select(anime =>
+                {
+                    var attributes = anime.Attributes;
+                    var title = attributes?.CanonicalTitle
+                        ?? (attributes?.Titles?.TryGetValue("en", out var englishTitle) == true ? englishTitle : null)
+                        ?? (attributes?.Titles?.TryGetValue("ja_jp", out var nativeTitle) == true ? nativeTitle : null);
+                    var year = DateTime.TryParse(attributes?.StartDate, out var startDate)
+                        ? startDate.Year
+                        : (int?)null;
+
+                    return new AniListMedia
+                    {
+                        KitsuId = anime.Id,
+                        Title = new AniListTitle { English = title },
+                        StartDate = year.HasValue ? new AniListDate { Year = year } : null,
+                        CoverImage = new AniListImage { Large = attributes?.PosterImage?.Original }
+                    };
+                }).ToList() ?? new List<AniListMedia>();
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error searching Kitsu for {Query}", query);
+                return new List<AniListMedia>();
+            }
         }
 
         // A franchise's root AniList entry (season 1) reports its OWN status - almost always
@@ -860,7 +1026,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                             {
                                 Name = va.Person?.Name ?? "Unknown VA",
                                 Role = $"Voice - {character.Character.Name}",
-                                // Type property is not available in Jellyfin 10.11.3
+                                // Keep this compatible with the current Jellyfin PersonInfo model.
                                 ImageUrl = va.Person?.Images?.WebP?.ImageUrl
                             });
                         }

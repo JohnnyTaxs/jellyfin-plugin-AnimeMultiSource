@@ -87,11 +87,12 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             result.Item = episode;
             result.HasMetadata = true;
 
-            if (!string.IsNullOrEmpty(tvdbEpisode.Image))
+            var imageUrl = TvdbApiClient.NormalizeImageUrl(tvdbEpisode.Image);
+            if (imageUrl != null)
             {
                 result.RemoteImages = new List<(string Url, ImageType Type)>
                 {
-                    (tvdbEpisode.Image, ImageType.Primary)
+                    (imageUrl, ImageType.Primary)
                 };
             }
 

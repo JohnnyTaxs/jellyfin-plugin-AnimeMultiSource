@@ -1,9 +1,13 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Plugin.AnimeMultiSource.Providers;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.Providers;
@@ -17,6 +21,12 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
     {
         private readonly ILogger<TvdbEpisodeImageProvider> _logger;
         private readonly TvdbApiClient _tvdbClient;
+        private readonly HttpClient _jikanClient;
+        private readonly AnimeListMapper _animeListMapper;
+        private readonly PlexMatchParser _plexMatchParser;
+    private static readonly object TmdbRateLock = new();
+    private static DateTimeOffset _lastTmdbRequest = DateTimeOffset.MinValue;
+    private static readonly TimeSpan TmdbMinimumRequestSpacing = TimeSpan.FromMilliseconds(250);
 
         public TvdbEpisodeImageProvider(ILogger<TvdbEpisodeImageProvider> logger)
         {
@@ -31,6 +41,10 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             httpClient.DefaultRequestHeaders.Add("User-Agent", "Jellyfin-AnimeMultiSource-Plugin/1.0");
 
             _tvdbClient = new TvdbApiClient(httpClient, logger, Constants.TvdbProjectApiKey);
+            _jikanClient = new HttpClient(handler);
+            _jikanClient.DefaultRequestHeaders.Add("User-Agent", "Jellyfin-AnimeMultiSource-Plugin/1.0");
+            _animeListMapper = new AnimeListMapper(_jikanClient, logger);
+            _plexMatchParser = new PlexMatchParser(logger);
         }
 
         public string Name => $"{Constants.PluginName} TVDB Episode Images";
@@ -55,31 +69,434 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             var tvdbId = episode.GetProviderId(MetadataProvider.Tvdb);
             if (string.IsNullOrWhiteSpace(tvdbId) || !int.TryParse(tvdbId, out var episodeId))
             {
-                _logger.LogDebug("Episode {Name} missing TVDB provider id; skipping image lookup", episode.Name);
-                return Array.Empty<RemoteImageInfo>();
+                _logger.LogInformation("Episode {Name} missing TVDB provider id; trying Jikan/MAL and Kitsu", episode.Name);
+                return await GetFallbackImagesAsync(episode, cancellationToken);
             }
 
             var tvdbEpisode = await _tvdbClient.GetEpisodeByIdAsync(episodeId, cancellationToken);
-            if (tvdbEpisode == null || string.IsNullOrEmpty(tvdbEpisode.Image))
+            var imageUrl = TvdbApiClient.NormalizeImageUrl(tvdbEpisode?.Image);
+            if (imageUrl != null)
             {
-                _logger.LogDebug("No image found for TVDB episode id {EpisodeId}", episodeId);
+                _logger.LogInformation("Returning TVDB episode image for {Name}: {Url}", episode.Name, imageUrl);
+                return new[]
+                {
+                    new RemoteImageInfo
+                    {
+                        ProviderName = Name,
+                        Url = imageUrl,
+                        Type = ImageType.Primary
+                    }
+                };
+            }
+
+            _logger.LogInformation("TVDB has no image for episode {EpisodeId}; trying Jikan/MAL", episodeId);
+            return await GetFallbackImagesAsync(episode, cancellationToken);
+        }
+
+        private async Task<IEnumerable<RemoteImageInfo>> GetFallbackImagesAsync(Episode episode, CancellationToken cancellationToken)
+        {
+            var jikanImages = await GetJikanImageAsync(episode, cancellationToken);
+            if (jikanImages.Any())
+            {
+                return jikanImages;
+            }
+
+            _logger.LogInformation("Jikan has no usable image for {Name}; trying Kitsu", episode.Name);
+            var kitsuImages = await GetKitsuImageAsync(episode, cancellationToken);
+            if (kitsuImages.Any())
+            {
+                return kitsuImages;
+            }
+
+            _logger.LogInformation("Kitsu has no usable image for {Name}; trying TMDB", episode.Name);
+            return await GetTmdbImageAsync(episode, cancellationToken);
+        }
+
+        private async Task<IEnumerable<RemoteImageInfo>> GetJikanImageAsync(Episode episode, CancellationToken cancellationToken)
+        {
+            var malId = await ResolveMalIdAsync(episode, cancellationToken);
+            if (!malId.HasValue || !episode.IndexNumber.HasValue)
+            {
+                _logger.LogInformation("No MAL ID available for {Name}; skipping Jikan image lookup", episode.Name);
                 return Array.Empty<RemoteImageInfo>();
             }
 
-            return new[]
+            var url = $"https://api.jikan.moe/v4/anime/{malId.Value}/episodes/{episode.IndexNumber.Value}";
+            try
             {
-                new RemoteImageInfo
+                using var response = await _jikanClient.GetAsync(url, cancellationToken);
+                if (!response.IsSuccessStatusCode)
                 {
-                    ProviderName = Name,
-                    Url = tvdbEpisode.Image,
-                    Type = ImageType.Primary
+                    _logger.LogInformation("Jikan returned {StatusCode} for MAL {MalId} episode {EpisodeNumber}", response.StatusCode, malId, episode.IndexNumber);
+                    return Array.Empty<RemoteImageInfo>();
                 }
-            };
+
+                var json = await response.Content.ReadAsStringAsync(cancellationToken);
+                var data = JsonSerializer.Deserialize<JikanEpisodeResponse>(json)?.Data;
+                var jikanImage = data?.Images?.WebP?.ImageUrl ?? data?.Images?.Jpg?.ImageUrl;
+                if (string.IsNullOrWhiteSpace(jikanImage))
+                {
+                    _logger.LogInformation("Jikan has no image for MAL {MalId} episode {EpisodeNumber}", malId, episode.IndexNumber);
+                    return Array.Empty<RemoteImageInfo>();
+                }
+
+                _logger.LogInformation("Returning Jikan episode image for {Name}: {Url}", episode.Name, jikanImage);
+                return new[]
+                {
+                    new RemoteImageInfo
+                    {
+                        ProviderName = Name,
+                        Url = jikanImage,
+                        Type = ImageType.Primary
+                    }
+                };
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Jikan image lookup failed for {Name}", episode.Name);
+                return Array.Empty<RemoteImageInfo>();
+            }
         }
 
-        public Task<HttpResponseMessage> GetImageResponse(string url, CancellationToken cancellationToken)
+        private async Task<long?> ResolveMalIdAsync(Episode episode, CancellationToken cancellationToken)
         {
-            return _tvdbClient.GetImageAsync(url, cancellationToken);
+            var rawMalId = episode.Series?.GetProviderId(Constants.MalProviderId)
+                ?? episode.GetProviderId(Constants.MalProviderId);
+            if (long.TryParse(rawMalId, out var malId))
+            {
+                return malId;
+            }
+
+            var seriesPath = episode.Series?.Path;
+            if (string.IsNullOrWhiteSpace(seriesPath))
+            {
+                return null;
+            }
+
+            var plexMatchPath = Path.Combine(seriesPath, Constants.PlexMatchFileName);
+            if (!File.Exists(plexMatchPath))
+            {
+                return null;
+            }
+
+            try
+            {
+                var plexData = _plexMatchParser.ParsePlexMatch(await File.ReadAllTextAsync(plexMatchPath, cancellationToken));
+                if (plexData.MalId.HasValue)
+                {
+                    _logger.LogInformation("Resolved MAL ID {MalId} directly from {Path}", plexData.MalId, plexMatchPath);
+                    return plexData.MalId.Value;
+                }
+
+                await _animeListMapper.LoadAnimeListsAsync();
+                AnimeMapping? mapping = null;
+                if (!string.IsNullOrWhiteSpace(plexData.TvdbId))
+                {
+                    mapping = _animeListMapper.GetMappingByTvdbId(plexData.TvdbId);
+                }
+
+                if (mapping == null && !string.IsNullOrWhiteSpace(plexData.ImdbId))
+                {
+                    mapping = _animeListMapper.GetMappingByImdbId(plexData.ImdbId);
+                }
+
+                if (mapping == null && plexData.AniListId.HasValue)
+                {
+                    mapping = _animeListMapper.GetMappingByAniListId(plexData.AniListId.Value);
+                }
+
+                return mapping?.mal_id;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to resolve MAL ID from .plexmatch for {Path}", plexMatchPath);
+                return null;
+            }
+        }
+
+        private async Task<IEnumerable<RemoteImageInfo>> GetKitsuImageAsync(Episode episode, CancellationToken cancellationToken)
+        {
+            var kitsuId = await ResolveKitsuIdAsync(episode, cancellationToken);
+            if (string.IsNullOrWhiteSpace(kitsuId) || !episode.IndexNumber.HasValue)
+            {
+                _logger.LogInformation("No Kitsu ID available for {Name}; skipping Kitsu image lookup", episode.Name);
+                return Array.Empty<RemoteImageInfo>();
+            }
+
+            try
+            {
+                const int pageSize = 20;
+                for (var offset = 0; offset <= 1000; offset += pageSize)
+                {
+                    var url = $"https://kitsu.io/api/edge/anime/{Uri.EscapeDataString(kitsuId)}/episodes?page%5Blimit%5D={pageSize}&page%5Boffset%5D={offset}";
+                    using var response = await _jikanClient.GetAsync(url, cancellationToken);
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        _logger.LogInformation("Kitsu returned {StatusCode} for anime {KitsuId} at offset {Offset}", response.StatusCode, kitsuId, offset);
+                        return Array.Empty<RemoteImageInfo>();
+                    }
+
+                    var json = await response.Content.ReadAsStringAsync(cancellationToken);
+                    var episodes = JsonSerializer.Deserialize<KitsuEpisodeResponse>(json)?.Data;
+                    var kitsuEpisode = episodes?.FirstOrDefault(candidate =>
+                        candidate.Attributes?.Number == episode.IndexNumber &&
+                        (!episode.ParentIndexNumber.HasValue || candidate.Attributes.SeasonNumber == episode.ParentIndexNumber));
+                    var imageUrl = kitsuEpisode?.Attributes?.Thumbnail?.Original;
+                    if (!string.IsNullOrWhiteSpace(imageUrl))
+                    {
+                        _logger.LogInformation("Returning Kitsu episode image for {Name}: {Url}", episode.Name, imageUrl);
+                        return new[]
+                        {
+                            new RemoteImageInfo
+                            {
+                                ProviderName = Name,
+                                Url = imageUrl,
+                                Type = ImageType.Primary
+                            }
+                        };
+                    }
+
+                    if (episodes == null || episodes.Count < pageSize)
+                    {
+                        break;
+                    }
+                }
+
+                _logger.LogInformation("Kitsu has no image for anime {KitsuId} episode {EpisodeNumber}", kitsuId, episode.IndexNumber);
+                return Array.Empty<RemoteImageInfo>();
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Kitsu image lookup failed for {Name}", episode.Name);
+                return Array.Empty<RemoteImageInfo>();
+            }
+        }
+
+        private async Task<string?> ResolveKitsuIdAsync(Episode episode, CancellationToken cancellationToken)
+        {
+            var providerId = episode.Series?.GetProviderId(Constants.KitsuProviderId)
+                ?? episode.GetProviderId(Constants.KitsuProviderId);
+            if (!string.IsNullOrWhiteSpace(providerId))
+            {
+                return providerId;
+            }
+
+            var seriesPath = episode.Series?.Path;
+            if (string.IsNullOrWhiteSpace(seriesPath))
+            {
+                return null;
+            }
+
+            var plexMatchPath = Path.Combine(seriesPath, Constants.PlexMatchFileName);
+            if (!File.Exists(plexMatchPath))
+            {
+                return null;
+            }
+
+            try
+            {
+                var plexData = _plexMatchParser.ParsePlexMatch(await File.ReadAllTextAsync(plexMatchPath, cancellationToken));
+                await _animeListMapper.LoadAnimeListsAsync();
+                AnimeMapping? mapping = null;
+                if (!string.IsNullOrWhiteSpace(plexData.TvdbId))
+                {
+                    mapping = _animeListMapper.GetMappingByTvdbId(plexData.TvdbId);
+                }
+
+                if (mapping == null && !string.IsNullOrWhiteSpace(plexData.ImdbId))
+                {
+                    mapping = _animeListMapper.GetMappingByImdbId(plexData.ImdbId);
+                }
+
+                if (mapping == null && plexData.AniListId.HasValue)
+                {
+                    mapping = _animeListMapper.GetMappingByAniListId(plexData.AniListId.Value);
+                }
+
+                return mapping?.kitsu_id?.ToString();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to resolve Kitsu ID from .plexmatch for {Path}", plexMatchPath);
+                return null;
+            }
+        }
+
+        private async Task<IEnumerable<RemoteImageInfo>> GetTmdbImageAsync(Episode episode, CancellationToken cancellationToken)
+        {
+            var config = Plugin.GetConfigurationSafe(_logger);
+            if (string.IsNullOrWhiteSpace(config.TmdbApiKey))
+            {
+                _logger.LogInformation("TMDB API key is not configured; skipping TMDB image lookup for {Name}", episode.Name);
+                return Array.Empty<RemoteImageInfo>();
+            }
+
+            var tmdbId = await ResolveTmdbIdAsync(episode, cancellationToken);
+            if (!tmdbId.HasValue || !episode.ParentIndexNumber.HasValue || !episode.IndexNumber.HasValue)
+            {
+                _logger.LogInformation("No TMDB ID or season/episode number available for {Name}; skipping TMDB image lookup", episode.Name);
+                return Array.Empty<RemoteImageInfo>();
+            }
+
+            var url = $"https://api.themoviedb.org/3/tv/{tmdbId.Value}/season/{episode.ParentIndexNumber.Value}/episode/{episode.IndexNumber.Value}/images?api_key={Uri.EscapeDataString(config.TmdbApiKey)}";
+            try
+            {
+                using var response = await SendTmdbRequestAsync(url, cancellationToken);
+                if (!response.IsSuccessStatusCode)
+                {
+                    _logger.LogInformation("TMDB returned {StatusCode} for show {TmdbId} S{Season}E{Episode}", response.StatusCode, tmdbId, episode.ParentIndexNumber, episode.IndexNumber);
+                    return Array.Empty<RemoteImageInfo>();
+                }
+
+                using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
+                if (!document.RootElement.TryGetProperty("stills", out var stills) || stills.ValueKind != JsonValueKind.Array)
+                {
+                    _logger.LogInformation("TMDB has no stills for show {TmdbId} S{Season}E{Episode}", tmdbId, episode.ParentIndexNumber, episode.IndexNumber);
+                    return Array.Empty<RemoteImageInfo>();
+                }
+
+                foreach (var still in stills.EnumerateArray())
+                {
+                    if (still.TryGetProperty("file_path", out var filePath) && !string.IsNullOrWhiteSpace(filePath.GetString()))
+                    {
+                        var imageUrl = $"https://image.tmdb.org/t/p/original{filePath.GetString()}";
+                        _logger.LogInformation("Returning TMDB episode image for {Name}: {Url}", episode.Name, imageUrl);
+                        return new[]
+                        {
+                            new RemoteImageInfo
+                            {
+                                ProviderName = Name,
+                                Url = imageUrl,
+                                Type = ImageType.Primary
+                            }
+                        };
+                    }
+                }
+
+                return Array.Empty<RemoteImageInfo>();
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "TMDB image lookup failed for {Name}", episode.Name);
+                return Array.Empty<RemoteImageInfo>();
+            }
+        }
+
+        private async Task<long?> ResolveTmdbIdAsync(Episode episode, CancellationToken cancellationToken)
+        {
+            var providerId = episode.Series?.GetProviderId(MetadataProvider.Tmdb)
+                ?? episode.GetProviderId(MetadataProvider.Tmdb);
+            if (long.TryParse(providerId, out var tmdbId))
+            {
+                return tmdbId;
+            }
+
+            var seriesPath = episode.Series?.Path;
+            if (string.IsNullOrWhiteSpace(seriesPath))
+            {
+                return null;
+            }
+
+            var plexMatchPath = Path.Combine(seriesPath, Constants.PlexMatchFileName);
+            if (!File.Exists(plexMatchPath))
+            {
+                return null;
+            }
+
+            try
+            {
+                var plexData = _plexMatchParser.ParsePlexMatch(await File.ReadAllTextAsync(plexMatchPath, cancellationToken));
+                if (plexData.TmdbId.HasValue)
+                {
+                    return plexData.TmdbId.Value;
+                }
+
+                await _animeListMapper.LoadAnimeListsAsync();
+                AnimeMapping? mapping = null;
+                if (!string.IsNullOrWhiteSpace(plexData.TvdbId))
+                {
+                    mapping = _animeListMapper.GetMappingByTvdbId(plexData.TvdbId);
+                }
+
+                if (mapping == null && !string.IsNullOrWhiteSpace(plexData.ImdbId))
+                {
+                    mapping = _animeListMapper.GetMappingByImdbId(plexData.ImdbId);
+                }
+
+                if (mapping == null && plexData.AniListId.HasValue)
+                {
+                    mapping = _animeListMapper.GetMappingByAniListId(plexData.AniListId.Value);
+                }
+
+                return mapping?.PreferredTmdbId;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to resolve TMDB ID from .plexmatch for {Path}", plexMatchPath);
+                return null;
+            }
+        }
+
+        private async Task<HttpResponseMessage> SendTmdbRequestAsync(string url, CancellationToken cancellationToken)
+        {
+            for (var attempt = 1; attempt <= 3; attempt++)
+            {
+                await EnforceTmdbRateLimitAsync(cancellationToken);
+                var response = await _jikanClient.GetAsync(url, cancellationToken);
+                if (response.StatusCode != System.Net.HttpStatusCode.TooManyRequests || attempt == 3)
+                {
+                    return response;
+                }
+
+                var retryAfter = response.Headers.RetryAfter?.Delta ?? TimeSpan.FromSeconds(2);
+                response.Dispose();
+                _logger.LogWarning("TMDB rate limited request; retrying in {DelayMs} ms (attempt {Attempt})", retryAfter.TotalMilliseconds, attempt);
+                await Task.Delay(retryAfter, cancellationToken);
+            }
+
+            throw new InvalidOperationException("TMDB request retry loop exited unexpectedly.");
+        }
+
+        private static async Task EnforceTmdbRateLimitAsync(CancellationToken cancellationToken)
+        {
+            TimeSpan delay;
+            lock (TmdbRateLock)
+            {
+                var now = DateTimeOffset.UtcNow;
+                var nextAllowed = _lastTmdbRequest + TmdbMinimumRequestSpacing;
+                delay = nextAllowed > now ? nextAllowed - now : TimeSpan.Zero;
+                _lastTmdbRequest = now + delay;
+            }
+
+            if (delay > TimeSpan.Zero)
+            {
+                await Task.Delay(delay, cancellationToken);
+            }
+        }
+
+        public async Task<HttpResponseMessage> GetImageResponse(string url, CancellationToken cancellationToken)
+        {
+            var normalizedUrl = TvdbApiClient.NormalizeImageUrl(url);
+            if (normalizedUrl == null)
+            {
+                throw new InvalidOperationException("TVDB returned an invalid episode image URL.");
+            }
+
+            var response = await _tvdbClient.GetImageAsync(normalizedUrl, cancellationToken);
+            _logger.LogInformation("TVDB episode image download returned {StatusCode} for {Url}", response.StatusCode, normalizedUrl);
+            return response;
         }
     }
 }

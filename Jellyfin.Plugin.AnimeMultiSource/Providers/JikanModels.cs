@@ -11,6 +11,33 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
         public JikanAnime? Data { get; set; }
     }
 
+    public class JikanSearchResponse
+    {
+        [JsonPropertyName("data")]
+        public List<JikanAnime>? Data { get; set; }
+    }
+
+    public class JikanEpisodeResponse
+    {
+        [JsonPropertyName("data")]
+        public JikanEpisode? Data { get; set; }
+    }
+
+    public class JikanEpisode
+    {
+        [JsonPropertyName("images")]
+        public JikanEpisodeImages? Images { get; set; }
+    }
+
+    public class JikanEpisodeImages
+    {
+        [JsonPropertyName("jpg")]
+        public JikanImage? Jpg { get; set; }
+
+        [JsonPropertyName("webp")]
+        public JikanImage? WebP { get; set; }
+    }
+
     public class JikanAnime
     {
         [JsonPropertyName("mal_id")]
@@ -78,6 +105,18 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
         [JsonPropertyName("studios")]
         public List<JikanStudio>? Studios { get; set; }
+
+        [JsonPropertyName("images")]
+        public JikanAnimeImages? Images { get; set; }
+    }
+
+    public class JikanAnimeImages
+    {
+        [JsonPropertyName("jpg")]
+        public JikanImage? Jpg { get; set; }
+
+        [JsonPropertyName("webp")]
+        public JikanImage? WebP { get; set; }
     }
 
     public class JikanAired

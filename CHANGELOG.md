@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.7.0 - 2026-09-12
+- Fork release targeting Jellyfin 12 / net10.0.
+- Added robust manual search fallbacks through Jikan/MAL and Kitsu when AniList is unavailable.
+- Added TVDB, Jikan/MAL, Kitsu, and optional TMDB episode image fallback ordering.
+- Added optional TMDB API key support with conservative rate limiting and HTTP 429 retries.
+- Made `.plexmatch` ID resolution explicit for TVDB, IMDb, TMDB, AniList, and MAL identifiers.
+
 ## 1.0.6.14 - 2026-08-10
 - Fixed AnimeSchedule Upcoming skipping multi-season anime with a newer season not yet foldered locally (e.g. Re:Zero's part 4): now detects a confirmed next season via AniList's strict `SEQUEL` relation and creates the missing season/episodes for it.
 - Fixed a duplicate/`TBA`-episode bug caused by an unreliable episode lookup (`season.Children` instead of a real `GetEpisodes()` query).

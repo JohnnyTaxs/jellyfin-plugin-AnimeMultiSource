@@ -1,0 +1,87 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Verify tag matches project version
+        shell: bash
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          project_version=$(sed -n 's/.*<Version>\(.*\)<\/Version>.*/\1/p' Jellyfin.Plugin.AnimeMultiSource/Jellyfin.Plugin.AnimeMultiSource.csproj | head -1)
+          if [[ "$tag_version" != "$project_version" ]]; then
+            echo "Tag version $tag_version does not match project version $project_version"
+            exit 1
+          fi
+
+      - name: Restore dependencies
+        run: dotnet restore jellyfin-plugin-AnimeMultiSource.sln
+
+      - name: Build release package
+        run: dotnet publish Jellyfin.Plugin.AnimeMultiSource/Jellyfin.Plugin.AnimeMultiSource.csproj -c Release --no-restore -o publish
+
+      - name: Create plugin archive
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          (cd publish && zip -q -r "../AnimeMultiSource_v${version}.zip" .)
+          md5sum "AnimeMultiSource_v${version}.zip"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" "AnimeMultiSource_v${version}.zip" \
+            --title "Anime Multi Source ${version}" \
+            --generate-notes
+
+      - name: Update manifest checksum
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          asset="AnimeMultiSource_v${version}.zip"
+          checksum=$(md5sum "$asset" | awk '{print toupper($1)}')
+          source_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${asset}"
+          changelog_url="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${GITHUB_REF_NAME}"
+          timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          jq --arg version "$version" \
+             --arg source_url "$source_url" \
+             --arg changelog_url "$changelog_url" \
+             --arg checksum "$checksum" \
+             --arg timestamp "$timestamp" \
+             '.[0].versions = [{version: $version, changelog: $changelog_url, targetAbi: "12.0.0.0", sourceUrl: $source_url, checksum: $checksum, timestamp: $timestamp}]' \
+             manifest.json > manifest.json.tmp
+          mv manifest.json.tmp manifest.json
+
+      - name: Commit updated manifest
+        shell: bash
+        run: |
+          default_branch="${{ github.event.repository.default_branch }}"
+          cp manifest.json /tmp/generated-manifest.json
+          git fetch origin "$default_branch"
+          git switch -C "$default_branch" "origin/$default_branch"
+          cp /tmp/generated-manifest.json manifest.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add manifest.json
+          git commit -m "Update manifest for ${GITHUB_REF_NAME}" || exit 0
+          git push origin "$default_branch"

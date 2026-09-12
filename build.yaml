@@ -1,17 +1,15 @@
 ---
 name: "AnimeMultiSource"
 guid: "8eca6f17-71fe-4309-a670-3cae083f22bd"
-version: "1.0.1.1"
-targetAbi: "10.11.2.0"
-framework: "net9.0"
-overview: "a attempt at a better Metadata plugin for anime"
+version: "1.0.7.0"
+targetAbi: "12.0.0.0"
+framework: "net10.0"
+overview: "Anime metadata, artwork, and episode images for Jellyfin 12"
 description: >
-  a attempt at a better Metadata plugin for anime using data from Multiple Source and combining it into one
-  using data from Multiple Source and combining it into one.
-  Data from Anilist, AniDB, Mal 
+  Anime metadata, artwork, and episode images from multiple sources including AniList, AniDB, MAL/Jikan, TVDB, Kitsu, TMDB, Fanart.tv, Fribb, and .plexmatch.
 category: "Metadata"
-owner: "Webbster64"
+owner: "JohnnyTaxs"
 artifacts:
 - "Jellyfin.Plugin.AnimeMultiSource.dll"
 changelog: >
-  Prefers TV mappings over OVA duplicates in Fribb mapping data to avoid mis-linking series like Future Diary.
+  Jellyfin 12 release with robust search and multi-provider episode image fallbacks.

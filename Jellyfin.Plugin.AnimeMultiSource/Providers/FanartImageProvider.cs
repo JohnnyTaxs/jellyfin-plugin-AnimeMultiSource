@@ -22,6 +22,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
         private readonly ILogger<FanartImageProvider> _logger;
         private readonly FanartClient _fanartClient;
         private readonly TvdbApiClient _tvdbClient;
+        private readonly ApiService _apiService;
         private readonly PluginConfiguration _config;
         private readonly HttpClient _httpClient;
         private readonly HashSet<string> _fanartLanguageOverride;
@@ -44,6 +45,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             _httpClient = httpClient;
             _fanartClient = new FanartClient(httpClient, logger, _config.PersonalApiKey ?? string.Empty);
             _tvdbClient = new TvdbApiClient(httpClient, logger, Constants.TvdbProjectApiKey);
+            _apiService = new ApiService(httpClient, logger);
             _fanartLanguageOverride = ParseFanartLanguages(_config.FanartLanguages);
             _hasLanguageOverride = !string.IsNullOrWhiteSpace(_config.FanartLanguages)
                 && !_config.FanartLanguages.Equals("all", StringComparison.OrdinalIgnoreCase)
@@ -75,8 +77,9 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             var tvdbId = GetTvdbId(item);
             if (string.IsNullOrWhiteSpace(tvdbId))
             {
-                _logger.LogInformation("Missing TVDB id; cannot fetch Fanart.tv artwork for {Name}", item.Name);
-                return Array.Empty<RemoteImageInfo>();
+                _logger.LogInformation("Missing TVDB id for {Name}; trying AniList artwork", item.Name);
+                var aniListImage = await GetAniListImageAsync(item, cancellationToken);
+                return aniListImage == null ? Array.Empty<RemoteImageInfo>() : new[] { aniListImage };
             }
 
             var seasonNumber = item is Season season ? season.IndexNumber : null;
@@ -193,7 +196,40 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 images.AddRange(seasonImages);
             }
 
+            if (images.Count == 0)
+            {
+                var aniListImage = await GetAniListImageAsync(item, cancellationToken);
+                if (aniListImage != null)
+                {
+                    images.Add(aniListImage);
+                }
+            }
+
             return images;
+        }
+
+        private async Task<RemoteImageInfo?> GetAniListImageAsync(BaseItem item, CancellationToken cancellationToken)
+        {
+            var id = item.GetProviderId(Constants.AniListProviderId);
+            if (string.IsNullOrWhiteSpace(id) || !int.TryParse(id, out var aniListId))
+            {
+                return null;
+            }
+
+            var anime = await _apiService.GetAniListAnimeAsync(aniListId);
+            var url = anime?.CoverImage?.Large;
+            if (string.IsNullOrWhiteSpace(url))
+            {
+                return null;
+            }
+
+            return new RemoteImageInfo
+            {
+                ProviderName = Name,
+                Url = url,
+                Type = ImageType.Primary,
+                Language = "en"
+            };
         }
 
         public Task<HttpResponseMessage> GetImageResponse(string url, CancellationToken cancellationToken)

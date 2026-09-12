@@ -1,9 +1,9 @@
 {
   "guid": "8eca6f17-71fe-4309-a670-3cae083f22bd",
   "name": "AnimeMultiSource",
-  "version": "1.0.6.14",
-  "description": "Multi-source anime metadata provider using .plexmatch files and Fribb anime lists",
-  "targetAbi": "10.11.3.0",
-  "sourceUrl": "https://github.com/webbster64/jellyfin-plugin-AnimeMultiSource",
-  "owner": "webbster64"
+  "version": "1.0.7.0",
+  "description": "Multi-source anime metadata, artwork, and episode images for Jellyfin 12 using .plexmatch files and multiple anime sources",
+  "targetAbi": "12.0.0.0",
+  "sourceUrl": "https://github.com/JohnnyTaxs/jellyfin-plugin-AnimeMultiSource",
+  "owner": "JohnnyTaxs"
 }

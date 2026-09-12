@@ -16,6 +16,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
     {
         private readonly ILogger<AnimeMultiSourceProvider> _logger;
         private readonly AnimeMultiSourceService _animeService;
+        private readonly ApiService _apiService;
 
         // Add a static counter to track how many times the provider is called
         private static int _callCount = 0;
@@ -26,6 +27,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
             // Create service with simplified dependency chain
             _animeService = new AnimeMultiSourceService(logger);
+            _apiService = new ApiService(new HttpClient(), logger);
         }
 
         public string Name => Constants.PluginName;
@@ -202,9 +204,47 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 series.ProviderIds.Count, metadata.Title, string.Join(", ", series.ProviderIds.Keys));
         }
 
-        public Task<IEnumerable<RemoteSearchResult>> GetSearchResults(SeriesInfo searchInfo, CancellationToken cancellationToken)
+        public async Task<IEnumerable<RemoteSearchResult>> GetSearchResults(SeriesInfo searchInfo, CancellationToken cancellationToken)
         {
-            return Task.FromResult<IEnumerable<RemoteSearchResult>>(new List<RemoteSearchResult>());
+            var media = await _apiService.SearchAniListAnimeAsync(searchInfo.Name, cancellationToken);
+            var results = new List<RemoteSearchResult>();
+
+            foreach (var anime in media)
+            {
+                var title = anime.Title?.English ?? anime.Title?.Romaji ?? anime.Title?.Native;
+                if (string.IsNullOrWhiteSpace(title))
+                {
+                    continue;
+                }
+
+                var result = new RemoteSearchResult
+                {
+                    Name = title,
+                    ProductionYear = anime.StartDate?.Year,
+                    ImageUrl = anime.CoverImage?.Large,
+                    SearchProviderName = Name,
+                    ProviderIds = new Dictionary<string, string>()
+                };
+
+                if (anime.Id > 0)
+                {
+                    result.ProviderIds[Constants.AniListProviderId] = anime.Id.ToString();
+                }
+
+                if (anime.IdMal.HasValue)
+                {
+                    result.ProviderIds[Constants.MalProviderId] = anime.IdMal.Value.ToString();
+                }
+
+                if (!string.IsNullOrWhiteSpace(anime.KitsuId))
+                {
+                    result.ProviderIds[Constants.KitsuProviderId] = anime.KitsuId;
+                }
+
+                results.Add(result);
+            }
+
+            return results;
         }
 
         public Task<HttpResponseMessage> GetImageResponse(string url, CancellationToken cancellationToken)

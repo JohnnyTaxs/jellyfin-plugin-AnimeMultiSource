@@ -102,7 +102,36 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
         public Task<HttpResponseMessage> GetImageAsync(string url, CancellationToken cancellationToken)
         {
             var request = new HttpRequestMessage(HttpMethod.Get, url);
+            request.Headers.TryAddWithoutValidation("User-Agent", "Jellyfin-AnimeMultiSource-Plugin/1.0");
             return _httpClient.SendAsync(request, cancellationToken);
+        }
+
+        public static string? NormalizeImageUrl(string? image)
+        {
+            if (string.IsNullOrWhiteSpace(image))
+            {
+                return null;
+            }
+
+            var value = image.Trim();
+            if (value.StartsWith("//", StringComparison.Ordinal))
+            {
+                return $"https:{value}";
+            }
+
+            if (Uri.TryCreate(value, UriKind.Absolute, out var absoluteUri))
+            {
+                return absoluteUri.Scheme == Uri.UriSchemeHttp || absoluteUri.Scheme == Uri.UriSchemeHttps
+                    ? absoluteUri.ToString()
+                    : null;
+            }
+
+            if (value.StartsWith("/", StringComparison.Ordinal))
+            {
+                return $"https://artworks.thetvdb.com{value}";
+            }
+
+            return $"https://artworks.thetvdb.com/{value.TrimStart('/')}";
         }
 
         public async Task<TvdbTranslation?> GetEpisodeTranslationAsync(int episodeId, string language, CancellationToken cancellationToken)

@@ -91,6 +91,11 @@
                         <div class="fieldDescription">Personal API key improves freshness of Fanart.tv images.</div>
                     </div>
                     <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="tmdbApiKey">TMDB API Key</label>
+                        <input id="tmdbApiKey" name="tmdbApiKey" type="password" is="emby-input" autocomplete="off" />
+                        <div class="fieldDescription">Optional. Used for episode stills after TVDB, Jikan/MAL, and Kitsu. Create one at themoviedb.org.</div>
+                    </div>
+                    <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="fanartMaxBackdrops">Max Backdrops (0 = all)</label>
                         <input id="fanartMaxBackdrops" name="fanartMaxBackdrops" type="number" min="0" is="emby-input" />
                         <div class="fieldDescription">Limits how many Fanart.tv backdrops are imported.</div>
@@ -215,6 +220,7 @@
 
                         // Fanart.tv
                         document.getElementById('personalApiKey').value = config.PersonalApiKey || '';
+                        document.getElementById('tmdbApiKey').value = config.TmdbApiKey || '';
                         document.getElementById('fanartMaxBackdrops').value = config.FanartMaxBackdrops || 0;
                         document.getElementById('fanartLanguages').value = config.FanartLanguages || '';
                         document.getElementById('fanartProbeImageSize').checked = config.FanartProbeImageSize !== false;
@@ -256,6 +262,7 @@
 
                         // Fanart.tv
                         config.PersonalApiKey = document.getElementById('personalApiKey').value;
+                        config.TmdbApiKey = document.getElementById('tmdbApiKey').value;
                         config.FanartMaxBackdrops = parseInt(document.getElementById('fanartMaxBackdrops').value || '0');
                         config.FanartLanguages = document.getElementById('fanartLanguages').value;
                         config.FanartProbeImageSize = document.getElementById('fanartProbeImageSize').checked;
