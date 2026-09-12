@@ -2,19 +2,21 @@
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <RootNamespace>Jellyfin.Plugin.AnimeMultiSource</RootNamespace>
-    <FileVersion>1.0.7.3</FileVersion>
-    <AssemblyVersion>1.0.7.3</AssemblyVersion>
-    <Version>1.0.7.3</Version>
+    <FileVersion>1.0.7.4</FileVersion>
+    <AssemblyVersion>1.0.7.4</AssemblyVersion>
+    <Version>1.0.7.4</Version>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <Nullable>enable</Nullable>
     <NoWarn>1591</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Jellyfin.Data" Version="12.0.0" />
-    <PackageReference Include="Jellyfin.Controller" Version="12.0.0" />
-    <PackageReference Include="Jellyfin.Common" Version="12.0.0" />
-    <PackageReference Include="Jellyfin.Model" Version="12.0.0" />
+        <!-- Jellyfin provides these assemblies at runtime. Bundling copies would break interface
+          discovery because the plugin's IHasWebPages type would come from a second assembly. -->
+        <PackageReference Include="Jellyfin.Data" Version="12.0.0" ExcludeAssets="runtime" />
+        <PackageReference Include="Jellyfin.Controller" Version="12.0.0" ExcludeAssets="runtime" />
+        <PackageReference Include="Jellyfin.Common" Version="12.0.0" ExcludeAssets="runtime" />
+        <PackageReference Include="Jellyfin.Model" Version="12.0.0" ExcludeAssets="runtime" />
     <PackageReference Include="JikanDotNet" Version="2.9.1" />
     <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.11" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.11" />
@@ -31,5 +33,20 @@
       <CopyToPublishDirectory>Always</CopyToPublishDirectory>
     </None>
   </ItemGroup>
+
+  <Target Name="RemoveJellyfinServerAssembliesFromPublish" AfterTargets="ComputeFilesToPublish">
+    <ItemGroup>
+      <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)"
+        Condition="'%(ResolvedFileToPublish.Filename)' == 'MediaBrowser.Common'
+          Or '%(ResolvedFileToPublish.Filename)' == 'MediaBrowser.Controller'
+          Or '%(ResolvedFileToPublish.Filename)' == 'MediaBrowser.Model'
+          Or '%(ResolvedFileToPublish.Filename)' == 'Jellyfin.Data'
+          Or '%(ResolvedFileToPublish.Filename)' == 'Jellyfin.Database.Implementations'
+          Or '%(ResolvedFileToPublish.Filename)' == 'Jellyfin.Extensions'
+          Or '%(ResolvedFileToPublish.Filename)' == 'Jellyfin.MediaEncoding.Keyframes'
+          Or '%(ResolvedFileToPublish.Filename)' == 'Jellyfin.Naming'
+          Or '%(ResolvedFileToPublish.Filename)' == 'Emby.Naming'" />
+    </ItemGroup>
+  </Target>
 
 </Project>

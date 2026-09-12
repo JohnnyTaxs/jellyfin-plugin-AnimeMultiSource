@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.0.7.4 - 2026-09-12
+- Exclude Jellyfin server assemblies from the release archive so `IHasWebPages` and other plugin interfaces resolve against the server's assemblies.
+
 ## 1.0.7.3 - 2026-09-12
 - Keep the legacy `AnimeMultiSource` configuration-page route while displaying the friendly `Anime Multi Source` name, restoring Jellyfin v12 configuration-page discovery.
 
