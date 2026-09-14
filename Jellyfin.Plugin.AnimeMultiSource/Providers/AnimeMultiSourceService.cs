@@ -879,6 +879,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             return field switch
             {
                 Configuration.OriginalTitleFieldType.Title => jikanData.Title,
+                Configuration.OriginalTitleFieldType.TitleEnglish => jikanData.TitleEnglish,
                 Configuration.OriginalTitleFieldType.TitleRomaji => jikanData.Title,
                 Configuration.OriginalTitleFieldType.TitleJapanese => jikanData.TitleJapanese,
                 _ => jikanData.TitleJapanese
@@ -892,6 +893,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             return field switch
             {
                 Configuration.OriginalTitleFieldType.Title => aniListData.Title.Romaji,
+                Configuration.OriginalTitleFieldType.TitleEnglish => aniListData.Title.English,
                 Configuration.OriginalTitleFieldType.TitleRomaji => aniListData.Title.Romaji,
                 Configuration.OriginalTitleFieldType.TitleJapanese => aniListData.Title.Native,
                 _ => aniListData.Title.Native
