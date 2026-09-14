@@ -5,6 +5,7 @@ using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.AnimeMultiSource.Providers;
@@ -24,9 +25,12 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
         private readonly HttpClient _jikanClient;
         private readonly AnimeListMapper _animeListMapper;
         private readonly PlexMatchParser _plexMatchParser;
-    private static readonly object TmdbRateLock = new();
-    private static DateTimeOffset _lastTmdbRequest = DateTimeOffset.MinValue;
-    private static readonly TimeSpan TmdbMinimumRequestSpacing = TimeSpan.FromMilliseconds(250);
+        private static readonly object TmdbRateLock = new();
+        private static DateTimeOffset _lastTmdbRequest = DateTimeOffset.MinValue;
+        private static readonly TimeSpan TmdbMinimumRequestSpacing = TimeSpan.FromMilliseconds(250);
+        private static readonly Regex EpisodeNumberPattern = new(
+            @"(?:^|[ ._-])S(?<season>\d{1,2})E(?<episode>\d{1,3})(?:[^0-9]|$)|(?:^|[ ._-])(?<season2>\d{1,2})x(?<episode2>\d{1,3})(?:[^0-9]|$)",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         public TvdbEpisodeImageProvider(ILogger<TvdbEpisodeImageProvider> logger)
         {
@@ -115,19 +119,20 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
         private async Task<IEnumerable<RemoteImageInfo>> GetJikanImageAsync(Episode episode, CancellationToken cancellationToken)
         {
             var malId = await ResolveMalIdAsync(episode, cancellationToken);
-            if (!malId.HasValue || !episode.IndexNumber.HasValue)
+            var numbers = GetEpisodeNumbers(episode);
+            if (!malId.HasValue || !numbers.Episode.HasValue)
             {
                 _logger.LogInformation("No MAL ID available for {Name}; skipping Jikan image lookup", episode.Name);
                 return Array.Empty<RemoteImageInfo>();
             }
 
-            var url = $"https://api.jikan.moe/v4/anime/{malId.Value}/episodes/{episode.IndexNumber.Value}";
+            var url = $"https://api.jikan.moe/v4/anime/{malId.Value}/episodes/{numbers.Episode.Value}";
             try
             {
                 using var response = await _jikanClient.GetAsync(url, cancellationToken);
                 if (!response.IsSuccessStatusCode)
                 {
-                    _logger.LogInformation("Jikan returned {StatusCode} for MAL {MalId} episode {EpisodeNumber}", response.StatusCode, malId, episode.IndexNumber);
+                    _logger.LogInformation("Jikan returned {StatusCode} for MAL {MalId} episode {EpisodeNumber}", response.StatusCode, malId, numbers.Episode);
                     return Array.Empty<RemoteImageInfo>();
                 }
 
@@ -136,7 +141,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 var jikanImage = data?.Images?.WebP?.ImageUrl ?? data?.Images?.Jpg?.ImageUrl;
                 if (string.IsNullOrWhiteSpace(jikanImage))
                 {
-                    _logger.LogInformation("Jikan has no image for MAL {MalId} episode {EpisodeNumber}", malId, episode.IndexNumber);
+                    _logger.LogInformation("Jikan has no image for MAL {MalId} episode {EpisodeNumber}", malId, numbers.Episode);
                     return Array.Empty<RemoteImageInfo>();
                 }
 
@@ -171,7 +176,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 return malId;
             }
 
-            var seriesPath = episode.Series?.Path;
+            var seriesPath = ResolveSeriesPath(episode);
             if (string.IsNullOrWhiteSpace(seriesPath))
             {
                 return null;
@@ -221,7 +226,8 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
         private async Task<IEnumerable<RemoteImageInfo>> GetKitsuImageAsync(Episode episode, CancellationToken cancellationToken)
         {
             var kitsuId = await ResolveKitsuIdAsync(episode, cancellationToken);
-            if (string.IsNullOrWhiteSpace(kitsuId) || !episode.IndexNumber.HasValue)
+            var numbers = GetEpisodeNumbers(episode);
+            if (string.IsNullOrWhiteSpace(kitsuId) || !numbers.Episode.HasValue)
             {
                 _logger.LogInformation("No Kitsu ID available for {Name}; skipping Kitsu image lookup", episode.Name);
                 return Array.Empty<RemoteImageInfo>();
@@ -243,8 +249,8 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                     var json = await response.Content.ReadAsStringAsync(cancellationToken);
                     var episodes = JsonSerializer.Deserialize<KitsuEpisodeResponse>(json)?.Data;
                     var kitsuEpisode = episodes?.FirstOrDefault(candidate =>
-                        candidate.Attributes?.Number == episode.IndexNumber &&
-                        (!episode.ParentIndexNumber.HasValue || candidate.Attributes.SeasonNumber == episode.ParentIndexNumber));
+                        candidate.Attributes?.Number == numbers.Episode &&
+                        (!numbers.Season.HasValue || candidate.Attributes.SeasonNumber == numbers.Season));
                     var imageUrl = kitsuEpisode?.Attributes?.Thumbnail?.Original;
                     if (!string.IsNullOrWhiteSpace(imageUrl))
                     {
@@ -266,7 +272,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                     }
                 }
 
-                _logger.LogInformation("Kitsu has no image for anime {KitsuId} episode {EpisodeNumber}", kitsuId, episode.IndexNumber);
+                _logger.LogInformation("Kitsu has no image for anime {KitsuId} episode {EpisodeNumber}", kitsuId, numbers.Episode);
                 return Array.Empty<RemoteImageInfo>();
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -289,7 +295,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 return providerId;
             }
 
-            var seriesPath = episode.Series?.Path;
+            var seriesPath = ResolveSeriesPath(episode);
             if (string.IsNullOrWhiteSpace(seriesPath))
             {
                 return null;
@@ -340,26 +346,27 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             }
 
             var tmdbId = await ResolveTmdbIdAsync(episode, cancellationToken);
-            if (!tmdbId.HasValue || !episode.ParentIndexNumber.HasValue || !episode.IndexNumber.HasValue)
+            var numbers = GetEpisodeNumbers(episode);
+            if (!tmdbId.HasValue || !numbers.Season.HasValue || !numbers.Episode.HasValue)
             {
                 _logger.LogInformation("No TMDB ID or season/episode number available for {Name}; skipping TMDB image lookup", episode.Name);
                 return Array.Empty<RemoteImageInfo>();
             }
 
-            var url = $"https://api.themoviedb.org/3/tv/{tmdbId.Value}/season/{episode.ParentIndexNumber.Value}/episode/{episode.IndexNumber.Value}/images?api_key={Uri.EscapeDataString(config.TmdbApiKey)}";
+            var url = $"https://api.themoviedb.org/3/tv/{tmdbId.Value}/season/{numbers.Season.Value}/episode/{numbers.Episode.Value}/images?api_key={Uri.EscapeDataString(config.TmdbApiKey)}";
             try
             {
                 using var response = await SendTmdbRequestAsync(url, cancellationToken);
                 if (!response.IsSuccessStatusCode)
                 {
-                    _logger.LogInformation("TMDB returned {StatusCode} for show {TmdbId} S{Season}E{Episode}", response.StatusCode, tmdbId, episode.ParentIndexNumber, episode.IndexNumber);
+                    _logger.LogInformation("TMDB returned {StatusCode} for show {TmdbId} S{Season}E{Episode}", response.StatusCode, tmdbId, numbers.Season, numbers.Episode);
                     return Array.Empty<RemoteImageInfo>();
                 }
 
                 using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
                 if (!document.RootElement.TryGetProperty("stills", out var stills) || stills.ValueKind != JsonValueKind.Array)
                 {
-                    _logger.LogInformation("TMDB has no stills for show {TmdbId} S{Season}E{Episode}", tmdbId, episode.ParentIndexNumber, episode.IndexNumber);
+                    _logger.LogInformation("TMDB has no stills for show {TmdbId} S{Season}E{Episode}", tmdbId, numbers.Season, numbers.Episode);
                     return Array.Empty<RemoteImageInfo>();
                 }
 
@@ -403,7 +410,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 return tmdbId;
             }
 
-            var seriesPath = episode.Series?.Path;
+            var seriesPath = ResolveSeriesPath(episode);
             if (string.IsNullOrWhiteSpace(seriesPath))
             {
                 return null;
@@ -447,6 +454,73 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 _logger.LogWarning(ex, "Failed to resolve TMDB ID from .plexmatch for {Path}", plexMatchPath);
                 return null;
             }
+        }
+
+        private static (int? Season, int? Episode) GetEpisodeNumbers(Episode episode)
+        {
+            var season = episode.ParentIndexNumber;
+            var episodeNumber = episode.IndexNumber;
+            if (season.HasValue && episodeNumber.HasValue)
+            {
+                return (season, episodeNumber);
+            }
+
+            var source = episode.Path ?? episode.Name;
+            var match = EpisodeNumberPattern.Match(source ?? string.Empty);
+            if (!match.Success)
+            {
+                return (season, episodeNumber);
+            }
+
+            if (!season.HasValue)
+            {
+                var seasonText = match.Groups["season"].Success
+                    ? match.Groups["season"].Value
+                    : match.Groups["season2"].Value;
+                if (int.TryParse(seasonText, out var parsedSeason))
+                {
+                    season = parsedSeason;
+                }
+            }
+
+            if (!episodeNumber.HasValue)
+            {
+                var episodeText = match.Groups["episode"].Success
+                    ? match.Groups["episode"].Value
+                    : match.Groups["episode2"].Value;
+                if (int.TryParse(episodeText, out var parsedEpisode))
+                {
+                    episodeNumber = parsedEpisode;
+                }
+            }
+
+            return (season, episodeNumber);
+        }
+
+        private static string? ResolveSeriesPath(Episode episode)
+        {
+            if (!string.IsNullOrWhiteSpace(episode.Series?.Path))
+            {
+                return episode.Series.Path;
+            }
+
+            if (string.IsNullOrWhiteSpace(episode.Path))
+            {
+                return null;
+            }
+
+            var episodeDirectory = Directory.Exists(episode.Path)
+                ? episode.Path
+                : Path.GetDirectoryName(episode.Path);
+            if (string.IsNullOrWhiteSpace(episodeDirectory))
+            {
+                return null;
+            }
+
+            var seasonDirectoryName = Path.GetFileName(episodeDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+            return SeasonNumberParser.TryParse(seasonDirectoryName).HasValue
+                ? Directory.GetParent(episodeDirectory)?.FullName
+                : episodeDirectory;
         }
 
         private async Task<HttpResponseMessage> SendTmdbRequestAsync(string url, CancellationToken cancellationToken)
