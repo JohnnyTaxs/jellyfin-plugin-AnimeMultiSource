@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.0.7.6 - 2026-09-14
+- Resolve episode IDs and season/episode numbers from the episode path and series `.plexmatch` when Jellyfin does not attach provider IDs during image refresh.
+
 ## 1.0.7.4 - 2026-09-12
 - Exclude Jellyfin server assemblies from the release archive so `IHasWebPages` and other plugin interfaces resolve against the server's assemblies.
 
