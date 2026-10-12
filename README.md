@@ -12,7 +12,7 @@ Remote anime metadata, tags, artwork and people for Jellyfin using multiple sour
 - Persistent caches: AniDB and AniList responses cached up to 5 days and persisted to disk to survive restarts.
 
 ## Requirements
-- Jellyfin 10.11.3+ (net9.0 plugin, ABI 10.11.3.0)
+- Jellyfin 12.0+ (net10.0 plugin, ABI 12.0.0.0)
 - API keys (all optional but recommended):
   - Fanart.tv personal API key (logos/backdrops)
   - AnimeSchedule.net API key (Upcoming episodes; get one from your AnimeSchedule.net account settings, API tab)
@@ -37,7 +37,7 @@ Remote anime metadata, tags, artwork and people for Jellyfin using multiple sour
 
 **Option 3: Build from source**
 1) `dotnet build` (or `dotnet publish -c Release`) in the repo root.
-2) Copy the contents of `Jellyfin.Plugin.AnimeMultiSource/bin/<Configuration>/net9.0/` into your Jellyfin `plugins/AnimeMultiSource/` folder.
+2) Copy the contents of `Jellyfin.Plugin.AnimeMultiSource/bin/<Configuration>/net10.0/` into your Jellyfin `plugins/AnimeMultiSource/` folder.
 3) Restart Jellyfin.
 
 ## Configuration
