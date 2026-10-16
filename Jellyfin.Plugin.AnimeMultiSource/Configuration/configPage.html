@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 
 <html lang="en" xmlns="http://www.w3.org/1999/xhtml">
 <head>
@@ -7,16 +7,24 @@
 </head>
 <body>
     <div id="AnimeMultiSourceConfigurationPage" data-role="page" class="page type-interior pluginConfigurationPage" data-require="emby-input,emby-button,emby-select,emby-checkbox,emby-textarea">
+        <style>
+            #AnimeMultiSourceConfigurationPage .animeMultiSourceTextarea label {
+                display: block;
+                margin-bottom: .5em;
+            }
+
+            #AnimeMultiSourceConfigurationPage .animeMultiSourceTextarea textarea {
+                display: block;
+                width: 100%;
+                box-sizing: border-box;
+                padding: .6em .75em;
+                font: inherit;
+                resize: vertical;
+            }
+        </style>
         <div data-role="content">
             <div class="content-primary">
                 <form id="AnimeMultiSourceConfigurationForm">
-
-                    <h2>Exclusions</h2>
-                    <div class="textareaContainer">
-                        <label class="textareaLabel" for="excludedPaths">Excluded folders</label>
-                        <textarea id="excludedPaths" name="excludedPaths" is="emby-textarea" class="emby-textarea" rows="4" placeholder="/data/media/anime/One Pace"></textarea>
-                        <div class="fieldDescription">Enter one full folder path per line, as seen by the Jellyfin server (use container paths for Docker). Anime Multi Source skips metadata, artwork, upcoming episodes, and automatic tag refreshes for these folders and everything inside them. Existing metadata and upcoming entries are kept. Remove a path to resume updates. Save to apply.</div>
-                    </div>
 
                     <!-- Title Configuration -->
                     <h2>Title Configuration</h2>
@@ -158,9 +166,9 @@
 
                     <!-- Content Configuration -->
                     <h2>Content Configuration</h2>
-                    <div class="textareaContainer">
-                        <label class="textareaLabel" for="approvedGenres">Approved Genres List</label>
-                        <textarea id="approvedGenres" name="approvedGenres" is="emby-textarea" class="emby-textarea" rows="5" placeholder="Enter one genre per line. Only these genres will be kept."></textarea>
+                    <div class="inputContainer animeMultiSourceTextarea">
+                        <label class="inputLabel inputLabelUnfocused" for="approvedGenres">Approved Genres List</label>
+                        <textarea id="approvedGenres" name="approvedGenres" is="emby-textarea" class="emby-input emby-textarea" rows="8" placeholder="Enter one genre per line. Only these genres will be kept."></textarea>
                         <div class="fieldDescription">Prefilled with a curated list; one genre per line. Genres from Jikan (themes+genres+explicit_genres+demographics) and Anilist will be combined and filtered by this list.</div>
                     </div>
 
@@ -168,6 +176,14 @@
                         <label class="inputLabel inputLabelUnfocused" for="chkAniDbRateLimit">AniDB Rate Limit</label>
                         <input id="chkAniDbRateLimit" name="chkAniDbRateLimit" type="number" is="emby-input" min="0" />
                         <div class="fieldDescription">This will prevent IP bans for requesting data too quickly.</div>
+                    </div>
+
+                    <h2>Exclusions</h2>
+                    <div class="inputContainer animeMultiSourceTextarea">
+                        <label class="inputLabel inputLabelUnfocused" for="excludedPaths">Excluded folders</label>
+                        <textarea id="excludedPaths" name="excludedPaths" is="emby-textarea" class="emby-input emby-textarea" rows="4" placeholder="/data/media/anime/One Pace"></textarea>
+                        <div class="fieldDescription">One server folder path per line. For Docker, use the path inside the container.</div>
+                        <div class="fieldDescription">Skips metadata, artwork, upcoming episodes, and automatic tag refreshes for each folder and its contents. Existing data is kept. Remove a path to resume updates.</div>
                     </div>
 
                     <div>
