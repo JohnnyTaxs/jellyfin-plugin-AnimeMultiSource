@@ -48,6 +48,11 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
         {
             var result = new MetadataResult<Season>();
             _config = Plugin.GetConfigurationSafe(_logger);
+            if (ItemExclusion.IsExcluded(info.Path, _config))
+            {
+                return result;
+            }
+
             _logger.LogInformation("=== SEASON PROVIDER CALL for: {SeasonName} (Season {SeasonNumber}, Path: {Path}) ===",
                 info.Name, info.IndexNumber, info.Path);
 

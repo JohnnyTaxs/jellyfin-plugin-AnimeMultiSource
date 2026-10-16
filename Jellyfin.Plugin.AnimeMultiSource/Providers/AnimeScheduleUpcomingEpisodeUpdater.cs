@@ -43,6 +43,11 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
         public async Task RefreshSeriesAsync(Series series)
         {
             var config = Plugin.GetConfigurationSafe(_logger);
+            if (ItemExclusion.IsExcluded(series, config))
+            {
+                return;
+            }
+
             if (string.IsNullOrWhiteSpace(config.AnimeScheduleApiKey))
             {
                 return;

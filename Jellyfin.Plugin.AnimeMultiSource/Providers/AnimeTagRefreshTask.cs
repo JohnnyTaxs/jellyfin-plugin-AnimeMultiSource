@@ -80,6 +80,12 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 cancellationToken.ThrowIfCancellationRequested();
                 var series = allSeries[i];
 
+                if (ItemExclusion.IsExcluded(series, Plugin.GetConfigurationSafe(_logger)))
+                {
+                    progress.Report(100.0 * (i + 1) / allSeries.Count);
+                    continue;
+                }
+
                 if (series.ProviderIds == null ||
                     (!series.ProviderIds.ContainsKey(Constants.AniDbProviderId) && !series.ProviderIds.ContainsKey(Constants.AniListProviderId)))
                 {
