@@ -65,6 +65,11 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
         public async Task<IEnumerable<RemoteImageInfo>> GetImages(BaseItem item, CancellationToken cancellationToken)
         {
+            if (ItemExclusion.IsExcluded(item, Plugin.GetConfigurationSafe(_logger)))
+            {
+                return Array.Empty<RemoteImageInfo>();
+            }
+
             if (item is not Episode episode)
             {
                 return Array.Empty<RemoteImageInfo>();

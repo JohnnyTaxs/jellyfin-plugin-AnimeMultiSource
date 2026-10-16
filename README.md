@@ -46,6 +46,7 @@ Open **Dashboard -> Plugins -> Anime Multi Source**:
 - Optionally enter a TMDB API key to enable episode-still fallback after TVDB, Jikan/MAL, and Kitsu.
 - AniDB client name/version are internal identifiers used by the plugin's legacy AniDB HTTP API integration. They default to `mediabrowser` / `1`; there is no separate AniDB client to install or configure.
 - Configure backdrop limits/quality and enable/disable sources as desired.
+- Under **Exclusions**, enter one full server folder path per line (for example, `/data/media/anime/One Pace`; use container paths for Docker). The plugin skips metadata, artwork, upcoming episodes, and automatic tag refreshes for each folder and all its children. Save to apply; remove the path to resume updates. Existing metadata, images, and upcoming entries are kept. Exclusions apply only to this plugin; Jellyfin can still scan the files and run other providers.
 - Approved genres: prefilled with a curated list; edit or clear as needed (one genre per line).
 
 ### Metadata and image providers

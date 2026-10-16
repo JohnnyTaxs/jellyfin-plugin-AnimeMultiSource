@@ -34,6 +34,13 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
         public async Task<MetadataResult<Series>> GetMetadata(SeriesInfo info, CancellationToken cancellationToken)
         {
+            // Read settings for each request so saved exclusions apply without a restart.
+            var config = Plugin.GetConfigurationSafe(_logger);
+            if (ItemExclusion.IsExcluded(info.Path, config))
+            {
+                return new MetadataResult<Series>();
+            }
+
             var callId = Interlocked.Increment(ref _callCount);
             var assemblyVersion = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
             _logger.LogInformation("=== METADATA PROVIDER CALL #{CallId} v{Version} for: {Name} (Path: {Path}) ===",
@@ -42,11 +49,6 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             // Log the SeriesInfo properties to understand what's different between calls
             _logger.LogDebug("SeriesInfo details - Name: {Name}, Path: {Path}, Year: {Year}, IsAutomated: {IsAutomated}",
                 info.Name, info.Path, info.Year, info.IsAutomated);
-
-            // Re-fetch config on every call (matches AnimeSeasonProvider) instead of caching it
-            // once at construction - this provider is long-lived, so a stale/default config
-            // captured at startup would otherwise never pick up settings saved afterward.
-            var config = Plugin.GetConfigurationSafe(_logger);
 
             var result = new MetadataResult<Series>();
 

@@ -11,6 +11,13 @@
             <div class="content-primary">
                 <form id="AnimeMultiSourceConfigurationForm">
 
+                    <h2>Exclusions</h2>
+                    <div class="textareaContainer">
+                        <label class="textareaLabel" for="excludedPaths">Excluded folders</label>
+                        <textarea id="excludedPaths" name="excludedPaths" is="emby-textarea" class="emby-textarea" rows="4" placeholder="/data/media/anime/One Pace"></textarea>
+                        <div class="fieldDescription">Enter one full folder path per line, as seen by the Jellyfin server (use container paths for Docker). Anime Multi Source skips metadata, artwork, upcoming episodes, and automatic tag refreshes for these folders and everything inside them. Existing metadata and upcoming entries are kept. Remove a path to resume updates. Save to apply.</div>
+                    </div>
+
                     <!-- Title Configuration -->
                     <h2>Title Configuration</h2>
                     <div class="selectContainer">
@@ -206,6 +213,7 @@
 
                     ApiClient.getPluginConfiguration(AnimeMultiSourceConfigurationPage.pluginUniqueId).then(function (config) {
                         // Title settings
+                        document.getElementById('excludedPaths').value = config.ExcludedPaths || '';
                         document.getElementById('titleField').value = config.TitleField || 'Title';
                         document.getElementById('titleDataSource').value = config.TitleDataSource || 'AniDB';
 
@@ -249,6 +257,7 @@
                     ApiClient.getPluginConfiguration(AnimeMultiSourceConfigurationPage.pluginUniqueId).then(function (config) {
                         // Title settings
                         config.TitleField = document.getElementById('titleField').value;
+                        config.ExcludedPaths = document.getElementById('excludedPaths').value;
                         config.TitleDataSource = document.getElementById('titleDataSource').value;
 
                         config.OriginalTitleField = document.getElementById('originalTitleField').value;
