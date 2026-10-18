@@ -37,6 +37,10 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
         public async Task<MetadataResult<Episode>> GetMetadata(EpisodeInfo info, CancellationToken cancellationToken)
         {
             var result = new MetadataResult<Episode>();
+            if (ItemExclusion.IsExcluded(info.Path, Plugin.GetConfigurationSafe(_logger)))
+            {
+                return result;
+            }
 
             if (!info.ParentIndexNumber.HasValue || !info.IndexNumber.HasValue)
             {

@@ -69,6 +69,11 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
         public async Task<IEnumerable<RemoteImageInfo>> GetImages(BaseItem item, CancellationToken cancellationToken)
         {
+            if (ItemExclusion.IsExcluded(item, Plugin.GetConfigurationSafe(_logger)))
+            {
+                return Array.Empty<RemoteImageInfo>();
+            }
+
             var version = typeof(FanartImageProvider).Assembly.GetName().Version?.ToString() ?? "unknown";
             _logger.LogInformation("{Provider} v{Version} GetImages for {Name} ({ItemType})", Name, version, item.Name, item.GetType().Name);
 

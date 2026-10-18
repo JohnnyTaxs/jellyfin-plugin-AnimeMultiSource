@@ -54,6 +54,8 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Configuration
 
     public class PluginConfiguration : BasePluginConfiguration
     {
+        public string ExcludedPaths { get; set; } = string.Empty;
+
         public PluginConfiguration()
         {
             AniDbRateLimit = 2000;
