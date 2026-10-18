@@ -12,6 +12,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Configuration
     public enum OriginalTitleFieldType
     {
         Title,
+        TitleEnglish,
         TitleJapanese,
         TitleRomaji
     }
