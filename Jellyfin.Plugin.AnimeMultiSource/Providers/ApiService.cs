@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -563,14 +564,18 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
         {
             if (string.IsNullOrEmpty(duration)) return null;
 
-            // Jikan returns duration like "24 min per ep", we just want the number
-            var match = System.Text.RegularExpressions.Regex.Match(duration, @"(\d+)\s*min");
-            if (match.Success)
+            // Jikan returns duration like "24 min per ep" for series, but "1 hr 46 min" or "2 hr"
+            // for movies - count the hours too instead of reading "1 hr 46 min" as 46 minutes.
+            var hours = System.Text.RegularExpressions.Regex.Match(duration, @"(\d+)\s*hr");
+            var minutes = System.Text.RegularExpressions.Regex.Match(duration, @"(\d+)\s*min");
+            if (!hours.Success && !minutes.Success)
             {
-                return match.Groups[1].Value;
+                return null;
             }
 
-            return null;
+            var total = (hours.Success ? int.Parse(hours.Groups[1].Value, CultureInfo.InvariantCulture) * 60 : 0)
+                + (minutes.Success ? int.Parse(minutes.Groups[1].Value, CultureInfo.InvariantCulture) : 0);
+            return total.ToString(CultureInfo.InvariantCulture);
         }
 
         public string MapJikanStatus(string? jikanStatus)
@@ -1363,23 +1368,96 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             }
         }
 
+        // Jikan (the MAL API) has outages where requests hang until HttpClient's 100 s default timeout,
+        // and a single series refresh makes several Jikan calls - minutes of waiting per item. Give up on
+        // a request after JikanRequestTimeout, and after a few failures in a row stop calling Jikan for
+        // a while: everything it supplies has an AniList fallback.
+        private static readonly TimeSpan JikanRequestTimeout = TimeSpan.FromSeconds(15);
+        private const int JikanFailuresBeforePause = 3;
+        private static readonly TimeSpan JikanPauseDuration = TimeSpan.FromMinutes(10);
+        private static readonly object JikanHealthLock = new();
+        private static int _jikanConsecutiveFailures;
+        private static DateTimeOffset _jikanPausedUntil = DateTimeOffset.MinValue;
+
+        public static bool IsJikanPaused
+        {
+            get
+            {
+                lock (JikanHealthLock)
+                {
+                    return DateTimeOffset.UtcNow < _jikanPausedUntil;
+                }
+            }
+        }
+
+        private void RecordJikanResult(bool success, string context, string reason)
+        {
+            lock (JikanHealthLock)
+            {
+                if (success)
+                {
+                    _jikanConsecutiveFailures = 0;
+                    return;
+                }
+
+                _jikanConsecutiveFailures++;
+                if (_jikanConsecutiveFailures < JikanFailuresBeforePause)
+                {
+                    _logger.LogWarning("Jikan (MAL) request for {Context} failed ({Reason}); {Count}/{Max} before pausing Jikan",
+                        context, reason, _jikanConsecutiveFailures, JikanFailuresBeforePause);
+                    return;
+                }
+
+                _jikanPausedUntil = DateTimeOffset.UtcNow + JikanPauseDuration;
+                _jikanConsecutiveFailures = 0;
+                _logger.LogWarning("Jikan (MAL) failed {Max} times in a row (last: {Reason}); skipping Jikan until {Until:HH:mm} and using AniList data only",
+                    JikanFailuresBeforePause, reason, _jikanPausedUntil.ToLocalTime());
+            }
+        }
+
         private async Task<HttpResponseMessage?> SendJikanRequestAsync(string url, string context)
         {
             for (var attempt = 1; attempt <= 3; attempt++)
             {
+                if (IsJikanPaused)
+                {
+                    _logger.LogDebug("Skipping Jikan request for {Context}: Jikan is paused after repeated failures", context);
+                    return null;
+                }
+
                 await EnforceJikanRateLimitAsync();
-                var response = await _httpClient.GetAsync(url);
+                HttpResponseMessage response;
+                try
+                {
+                    using var timeout = new System.Threading.CancellationTokenSource(JikanRequestTimeout);
+                    response = await _httpClient.GetAsync(url, timeout.Token);
+                }
+                catch (Exception ex) when (ex is TaskCanceledException or HttpRequestException)
+                {
+                    RecordJikanResult(false, context, ex is TaskCanceledException ? $"no response within {JikanRequestTimeout.TotalSeconds:F0} s" : ex.Message);
+                    return null;
+                }
 
                 if (response.IsSuccessStatusCode)
                 {
+                    RecordJikanResult(true, context, string.Empty);
                     return response;
                 }
 
-                if (response.StatusCode == HttpStatusCode.TooManyRequests ||
-                    response.StatusCode == HttpStatusCode.ServiceUnavailable)
+                // 5xx (including 503) means Jikan or MAL behind it is down: waiting won't help.
+                if ((int)response.StatusCode >= 500)
                 {
-                    var backoff = AddJitter(GetRetryAfterDelay(response, TimeSpan.FromSeconds(Math.Min(30 * attempt, 90))));
-                    _logger.LogWarning("Jikan rate limited for {Context} (status {Status}); backing off {DelayMs} ms before retry {Attempt}", context, response.StatusCode, backoff.TotalMilliseconds, attempt);
+                    RecordJikanResult(false, context, $"HTTP {(int)response.StatusCode}");
+                    response.Dispose();
+                    return null;
+                }
+
+                if (response.StatusCode == HttpStatusCode.TooManyRequests)
+                {
+                    var retryAfter = GetRetryAfterDelay(response, TimeSpan.FromSeconds(5 * attempt));
+                    var backoff = AddJitter(retryAfter > TimeSpan.FromSeconds(30) ? TimeSpan.FromSeconds(30) : retryAfter);
+                    _logger.LogWarning("Jikan rate limited for {Context}; backing off {DelayMs} ms before retry {Attempt}", context, backoff.TotalMilliseconds, attempt);
+                    response.Dispose();
                     await Task.Delay(backoff);
                     continue;
                 }
@@ -1387,7 +1465,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 return response;
             }
 
-            _logger.LogWarning("Jikan request for {Context} to {Url} failed after retries", context, url);
+            RecordJikanResult(false, context, "still rate limited after retries");
             return null;
         }
 
