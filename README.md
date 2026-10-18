@@ -13,6 +13,7 @@ Remote anime metadata, tags, artwork and people for Jellyfin using multiple sour
 
 ## Requirements
 - Jellyfin 12.0+ (net10.0 plugin, ABI 12.0.0.0)
+- Still on Jellyfin 10.11? The [`jellyfin-10.11`](https://github.com/webbster64/jellyfin-plugin-AnimeMultiSource/tree/jellyfin-10.11) branch keeps the 1.0.x line (net9.0, ABI 10.11.3.0) and gets bug-fix backports. The plugin catalog offers each server the newest build it can run.
 - API keys (all optional but recommended):
   - Fanart.tv personal API key (logos/backdrops)
   - AnimeSchedule.net API key (Upcoming episodes; get one from your AnimeSchedule.net account settings, API tab)
