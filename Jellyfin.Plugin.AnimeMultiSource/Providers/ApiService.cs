@@ -55,6 +55,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
         private static readonly object JikanRateLock = new();
         private static DateTimeOffset _lastJikanRequest = DateTimeOffset.MinValue;
         private const int JikanMinSpacingMs = 2500;
+        private static readonly TimeSpan ExternalRequestTimeout = TimeSpan.FromSeconds(15);
         private static readonly object AniDbBanLock = new();
         private static DateTimeOffset _aniDbBanUntil = DateTimeOffset.MinValue;
         private static string _aniDbBanReason = string.Empty;
@@ -90,7 +91,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 var url = $"https://api.jikan.moe/v4/anime/{intMalId}";
                 _logger.LogDebug("Fetching Jikan data from: {Url}", url);
 
-                var response = await SendJikanRequestAsync(url, "anime");
+                using var response = await SendJikanRequestAsync(url, "anime");
                 if (response == null)
                 {
                     return null;
@@ -244,7 +245,9 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                     JsonSerializer.Serialize(request),
                     System.Text.Encoding.UTF8,
                     "application/json");
-                using var response = await _httpClient.PostAsync("https://graphql.anilist.co", content, cancellationToken);
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                timeout.CancelAfter(ExternalRequestTimeout);
+                using var response = await _httpClient.PostAsync("https://graphql.anilist.co", content, timeout.Token);
                 if (!response.IsSuccessStatusCode)
                 {
                     _logger.LogWarning("AniList search returned status code: {StatusCode}; trying Jikan/MAL", response.StatusCode);
@@ -275,58 +278,62 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
         }
 
         private async Task<List<AniListMedia>> SearchJikanAnimeAsync(string query, CancellationToken cancellationToken)
+        {
+            try
             {
-                try
-                {
-                    var url = $"https://api.jikan.moe/v4/anime?q={Uri.EscapeDataString(query)}&limit=20&sfw=true";
-                    await EnforceJikanRateLimitAsync();
-                    using var response = await _httpClient.GetAsync(url, cancellationToken);
-                    if (!response.IsSuccessStatusCode)
-                    {
-                        _logger.LogWarning("Jikan search returned status code: {StatusCode}; trying Kitsu", response.StatusCode);
-                    }
-                    else
-                    {
-                        var json = await response.Content.ReadAsStringAsync(cancellationToken);
-                        var data = JsonSerializer.Deserialize<JikanSearchResponse>(json)?.Data;
-                        var results = data?.Select(anime => new AniListMedia
-                        {
-                            IdMal = anime.MalId,
-                            Title = new AniListTitle
-                            {
-                                English = anime.TitleEnglish,
-                                Romaji = anime.Title,
-                                Native = anime.TitleJapanese
-                            },
-                            StartDate = anime.Aired?.From.HasValue == true
-                                ? new AniListDate { Year = anime.Aired.From.Value.Year }
-                                : anime.Year.HasValue
-                                    ? new AniListDate { Year = anime.Year.Value }
-                                    : null,
-                            CoverImage = new AniListImage
-                            {
-                                Large = anime.Images?.WebP?.ImageUrl ?? anime.Images?.Jpg?.ImageUrl
-                            }
-                        }).ToList();
+                var url = $"https://api.jikan.moe/v4/anime?q={Uri.EscapeDataString(query)}&limit=20&sfw=true";
 
-                        if (results?.Count > 0)
+                // Route manual search through the same timeout/circuit breaker as metadata lookups.
+                using var response = await SendJikanRequestAsync(url, "search", cancellationToken);
+                if (response == null)
+                {
+                    _logger.LogWarning("Jikan search unavailable for {Query}; trying Kitsu", query);
+                }
+                else if (!response.IsSuccessStatusCode)
+                {
+                    _logger.LogWarning("Jikan search returned status code: {StatusCode}; trying Kitsu", response.StatusCode);
+                }
+                else
+                {
+                    var json = await response.Content.ReadAsStringAsync(cancellationToken);
+                    var data = JsonSerializer.Deserialize<JikanSearchResponse>(json)?.Data;
+                    var results = data?.Select(anime => new AniListMedia
+                    {
+                        IdMal = anime.MalId,
+                        Title = new AniListTitle
                         {
-                            return results;
+                            English = anime.TitleEnglish,
+                            Romaji = anime.Title,
+                            Native = anime.TitleJapanese
+                        },
+                        StartDate = anime.Aired?.From.HasValue == true
+                            ? new AniListDate { Year = anime.Aired.From.Value.Year }
+                            : anime.Year.HasValue
+                                ? new AniListDate { Year = anime.Year.Value }
+                                : null,
+                        CoverImage = new AniListImage
+                        {
+                            Large = anime.Images?.WebP?.ImageUrl ?? anime.Images?.Jpg?.ImageUrl
                         }
-                    }
+                    }).ToList();
 
-                    return await SearchKitsuAnimeAsync(query, cancellationToken);
-                }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                {
-                    throw;
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Error searching Jikan for {Query}", query);
-                    return await SearchKitsuAnimeAsync(query, cancellationToken);
+                    if (results?.Count > 0)
+                    {
+                        return results;
+                    }
                 }
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error searching Jikan for {Query}", query);
+            }
+
+            return await SearchKitsuAnimeAsync(query, cancellationToken);
+        }
 
         private async Task<List<AniListMedia>> SearchKitsuAnimeAsync(string query, CancellationToken cancellationToken)
         {
@@ -336,7 +343,9 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 var url = $"https://kitsu.io/api/edge/anime?filter%5Btext%5D={encodedQuery}&page%5Blimit%5D=20";
                 using var request = new HttpRequestMessage(HttpMethod.Get, url);
                 request.Headers.TryAddWithoutValidation("User-Agent", "Jellyfin-AnimeMultiSource-Plugin/1.0");
-                using var response = await _httpClient.SendAsync(request, cancellationToken);
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                timeout.CancelAfter(ExternalRequestTimeout);
+                using var response = await _httpClient.SendAsync(request, timeout.Token);
                 if (!response.IsSuccessStatusCode)
                 {
                     _logger.LogWarning("Kitsu search returned status code: {StatusCode}", response.StatusCode);
@@ -948,7 +957,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 var intMalId = (int)malId;
 
                 var url = $"https://api.jikan.moe/v4/anime/{intMalId}/characters";
-                var response = await SendJikanRequestAsync(url, "people");
+                using var response = await SendJikanRequestAsync(url, "people");
 
                 if (response != null && response.IsSuccessStatusCode)
                 {
@@ -1516,7 +1525,9 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             return fallback;
         }
 
-        private async Task EnforceJikanRateLimitAsync()
+        // Shared by metadata lookups and the episode-image fallback so all Jikan traffic uses the
+        // same spacing, pause state, and timeout regardless of which provider started it.
+        internal static async Task EnforceJikanRateLimitAsync()
         {
             int waitMs;
             lock (JikanRateLock)
@@ -1529,7 +1540,6 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
             if (waitMs > 0)
             {
-                _logger.LogDebug("Jikan rate limiting: waiting {WaitMs} ms before request", waitMs);
                 await Task.Delay(waitMs);
             }
         }
@@ -1581,7 +1591,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             }
         }
 
-        private async Task<HttpResponseMessage?> SendJikanRequestAsync(string url, string context)
+        private async Task<HttpResponseMessage?> SendJikanRequestAsync(string url, string context, CancellationToken cancellationToken = default)
         {
             for (var attempt = 1; attempt <= 3; attempt++)
             {
@@ -1595,12 +1605,17 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 HttpResponseMessage response;
                 try
                 {
-                    using var timeout = new System.Threading.CancellationTokenSource(JikanRequestTimeout);
+                    using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                    timeout.CancelAfter(JikanRequestTimeout);
                     response = await _httpClient.GetAsync(url, timeout.Token);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
                 }
                 catch (Exception ex) when (ex is TaskCanceledException or HttpRequestException)
                 {
-                    RecordJikanResult(false, context, ex is TaskCanceledException ? $"no response within {JikanRequestTimeout.TotalSeconds:F0} s" : ex.Message);
+                    RecordJikanResult(false, context, ex is TaskCanceledException ? $"no response from Jikan within {JikanRequestTimeout.TotalSeconds:F0} s" : ex.Message);
                     return null;
                 }
 

@@ -28,6 +28,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
         private static readonly object TmdbRateLock = new();
         private static DateTimeOffset _lastTmdbRequest = DateTimeOffset.MinValue;
         private static readonly TimeSpan TmdbMinimumRequestSpacing = TimeSpan.FromMilliseconds(250);
+        private static readonly TimeSpan ExternalRequestTimeout = TimeSpan.FromSeconds(15);
         private static readonly Regex EpisodeNumberPattern = new(
             @"(?:^|[ ._-])S(?<season>\d{1,2})E(?<episode>\d{1,3})(?:[^0-9]|$)|(?:^|[ ._-])(?<season2>\d{1,2})x(?<episode2>\d{1,3})(?:[^0-9]|$)",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
@@ -123,6 +124,12 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
         private async Task<IEnumerable<RemoteImageInfo>> GetJikanImageAsync(Episode episode, CancellationToken cancellationToken)
         {
+            if (ApiService.IsJikanPaused)
+            {
+                _logger.LogDebug("Skipping Jikan episode image lookup for {Name}: Jikan is paused after repeated failures", episode.Name);
+                return Array.Empty<RemoteImageInfo>();
+            }
+
             var malId = await ResolveMalIdAsync(episode, cancellationToken);
             var numbers = GetEpisodeNumbers(episode);
             if (!malId.HasValue || !numbers.Episode.HasValue)
@@ -134,7 +141,8 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             var url = $"https://api.jikan.moe/v4/anime/{malId.Value}/episodes/{numbers.Episode.Value}";
             try
             {
-                using var response = await _jikanClient.GetAsync(url, cancellationToken);
+                await ApiService.EnforceJikanRateLimitAsync();
+                using var response = await GetWithTimeoutAsync(_jikanClient, url, cancellationToken);
                 if (!response.IsSuccessStatusCode)
                 {
                     _logger.LogInformation("Jikan returned {StatusCode} for MAL {MalId} episode {EpisodeNumber}", response.StatusCode, malId, numbers.Episode);
@@ -244,7 +252,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 for (var offset = 0; offset <= 1000; offset += pageSize)
                 {
                     var url = $"https://kitsu.io/api/edge/anime/{Uri.EscapeDataString(kitsuId)}/episodes?page%5Blimit%5D={pageSize}&page%5Boffset%5D={offset}";
-                    using var response = await _jikanClient.GetAsync(url, cancellationToken);
+                    using var response = await GetWithTimeoutAsync(_jikanClient, url, cancellationToken);
                     if (!response.IsSuccessStatusCode)
                     {
                         _logger.LogInformation("Kitsu returned {StatusCode} for anime {KitsuId} at offset {Offset}", response.StatusCode, kitsuId, offset);
@@ -533,7 +541,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             for (var attempt = 1; attempt <= 3; attempt++)
             {
                 await EnforceTmdbRateLimitAsync(cancellationToken);
-                var response = await _jikanClient.GetAsync(url, cancellationToken);
+                var response = await GetWithTimeoutAsync(_jikanClient, url, cancellationToken);
                 if (response.StatusCode != System.Net.HttpStatusCode.TooManyRequests || attempt == 3)
                 {
                     return response;
@@ -562,6 +570,22 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             if (delay > TimeSpan.Zero)
             {
                 await Task.Delay(delay, cancellationToken);
+            }
+        }
+
+        // A stuck Jikan/Kitsu/TMDB request must not hold up an image refresh for HttpClient's
+        // 100 s default. Keep the shared client for its connection pool, but bound each API call.
+        private static async Task<HttpResponseMessage> GetWithTimeoutAsync(HttpClient client, string url, CancellationToken cancellationToken)
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(ExternalRequestTimeout);
+            try
+            {
+                return await client.GetAsync(url, timeout.Token);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                throw new TimeoutException($"Request to {url} timed out after {ExternalRequestTimeout.TotalSeconds:F0} s");
             }
         }
 

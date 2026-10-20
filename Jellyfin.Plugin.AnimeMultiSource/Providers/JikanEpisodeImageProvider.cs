@@ -16,6 +16,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 {
     public class JikanEpisodeImageProvider : IRemoteImageProvider
     {
+        private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(15);
         private readonly ILogger<JikanEpisodeImageProvider> _logger;
         private readonly HttpClient _httpClient;
 
@@ -44,8 +45,19 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
         public async Task<IEnumerable<RemoteImageInfo>> GetImages(BaseItem item, CancellationToken cancellationToken)
         {
+            if (ItemExclusion.IsExcluded(item, Plugin.GetConfigurationSafe(_logger)))
+            {
+                return Array.Empty<RemoteImageInfo>();
+            }
+
             if (item is not Episode episode || !episode.IndexNumber.HasValue)
             {
+                return Array.Empty<RemoteImageInfo>();
+            }
+
+            if (ApiService.IsJikanPaused)
+            {
+                _logger.LogDebug("Skipping Jikan episode image lookup for {Name}: Jikan is paused after repeated failures", episode.Name);
                 return Array.Empty<RemoteImageInfo>();
             }
 
@@ -59,7 +71,8 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             var url = $"https://api.jikan.moe/v4/anime/{malId.Value}/episodes/{episode.IndexNumber.Value}";
             try
             {
-                using var response = await _httpClient.GetAsync(url, cancellationToken);
+                await ApiService.EnforceJikanRateLimitAsync();
+                using var response = await GetWithTimeoutAsync(url, cancellationToken);
                 if (!response.IsSuccessStatusCode)
                 {
                     _logger.LogDebug("Jikan episode image lookup returned {StatusCode} for MAL {MalId} episode {EpisodeNumber}",
@@ -95,6 +108,20 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             {
                 _logger.LogWarning(ex, "Jikan episode image lookup failed for MAL {MalId} episode {EpisodeNumber}", malId, episode.IndexNumber);
                 return Array.Empty<RemoteImageInfo>();
+            }
+        }
+
+        private async Task<HttpResponseMessage> GetWithTimeoutAsync(string url, CancellationToken cancellationToken)
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(RequestTimeout);
+            try
+            {
+                return await _httpClient.GetAsync(url, timeout.Token);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                throw new TimeoutException($"Request to {url} timed out after {RequestTimeout.TotalSeconds:F0} s");
             }
         }
 

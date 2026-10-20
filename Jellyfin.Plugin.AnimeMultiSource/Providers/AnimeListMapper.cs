@@ -258,10 +258,22 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 if (value.ValueKind == JsonValueKind.Object)
                 {
                     if (value.TryGetProperty("tv", out var tv))
-                        return ReadTmdbIds(tv).FirstOrDefault() is var tvId && tvId > 0 ? tvId : null;
+                    {
+                        var tvId = ReadTmdbIds(tv).FirstOrDefault();
+                        if (tvId > 0)
+                        {
+                            return tvId;
+                        }
+                    }
 
                     if (value.TryGetProperty("movie", out var movie))
-                        return ReadTmdbIds(movie).FirstOrDefault() is var movieId && movieId > 0 ? movieId : null;
+                    {
+                        var movieId = ReadTmdbIds(movie).FirstOrDefault();
+                        if (movieId > 0)
+                        {
+                            return movieId;
+                        }
+                    }
 
                     return null;
                 }
