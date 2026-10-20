@@ -24,12 +24,16 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
         private readonly HttpClient _httpClient;
         private readonly ILogger _logger;
         private readonly TagFilterService _tagFilterService;
-        private DateTime _lastAniDbRequest = DateTime.MinValue;
+        private static DateTime _lastAniDbRequest = DateTime.MinValue;
         private static readonly ConcurrentDictionary<long, AniDbCacheEntry> _aniDbCache = new();
         private static readonly TimeSpan AniDbCacheDuration = TimeSpan.FromDays(5);
         private static readonly object AniDbRateLock = new();
+        // AniDB counts requests globally. Serialize the whole request so concurrent metadata and
+        // episode-image lookups can't both observe the same "last request" timestamp and burst.
+        private static readonly SemaphoreSlim AniDbRequestGate = new(1, 1);
         private static DateTime _aniDbDailyCountDate = DateTime.UtcNow.Date;
         private static int _aniDbDailyRequestCount;
+        private const int MaxSeasonWalk = 100;
         private const int AniDbDailySoftCap = 5;
         private const int AniDbSlowRateLimitMs = 8000;
         private static readonly object AniListRateLock = new();
@@ -544,6 +548,14 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 return null;
             }
 
+            // A single season walk costs one AniList request per season. Refuse absurd numbers
+            // (e.g. a folder literally named "Season 50000") instead of blocking refresh for days.
+            if (seasonNumber > MaxSeasonWalk)
+            {
+                _logger.LogWarning("Refusing to walk {SeasonNumber} seasons for AniList ID {AniListId}; limit is {Limit}", seasonNumber, baseAniListId, MaxSeasonWalk);
+                return null;
+            }
+
             if (seasonNumber == 0)
             {
                 return await GetSpecialSeasonDetailAsync(baseAniListId);
@@ -556,6 +568,8 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
             var currentId = baseAniListId;
             AniListSeasonDetail? detail = null;
+            // Guard against relation cycles, which would otherwise re-fetch the same seasons.
+            var visited = new HashSet<int> { baseAniListId };
 
             for (int i = 1; i <= seasonNumber; i++)
             {
@@ -575,19 +589,20 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 // If no direct TV sequel link, try to walk through movies/OVAs until we reach the next TV/TV_SHORT (or season-like) node.
                 if (!nextId.HasValue)
                 {
-                    // Refresh detail to ensure relations/duration are present before traversal.
-                    var refreshed = await GetAniListSeasonDetailAsync(currentId, forceRefresh: true);
-                    if (refreshed != null)
-                    {
-                        detail = refreshed;
-                    }
-
+                    // The cached detail already contains relations (the GraphQL query requests them),
+                    // so there is no need for a second request here.
                     nextId = await ResolveNextTvSequelAsync(detail);
                 }
 
                 if (!nextId.HasValue)
                 {
                     _logger.LogWarning("Missing sequel link after season {SeasonIndex} for AniList ID {AniListId}", i, currentId);
+                    return null;
+                }
+
+                if (!visited.Add(nextId.Value))
+                {
+                    _logger.LogWarning("AniList relation cycle detected at season {SeasonIndex} for AniList ID {AniListId}", i, currentId);
                     return null;
                 }
 
@@ -1183,6 +1198,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             var tags = new List<string>();
             string? mainTitle = null;
 
+            await AniDbRequestGate.WaitAsync().ConfigureAwait(false);
             try
             {
                 var rateContext = GetAniDbRateLimitContext(rateLimitMs);
@@ -1305,6 +1321,10 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error fetching AniDB tags for ID {AniDbId}", anidbId);
+            }
+            finally
+            {
+                AniDbRequestGate.Release();
             }
 
             return (tags, mainTitle);
@@ -1550,6 +1570,10 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             return banPhrases.Any(p => lowered.Contains(p));
         }
 
+        // A malformed or hostile Retry-After (e.g. "Retry-After: 999999999") must not park the
+        // plugin for an unbounded time.
+        private static readonly TimeSpan MaxRetryAfterDelay = TimeSpan.FromHours(1);
+
         private TimeSpan GetRetryAfterDelay(HttpResponseMessage response, TimeSpan fallback)
         {
             var retryAfter = response.Headers.RetryAfter;
@@ -1557,7 +1581,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             {
                 if (retryAfter.Delta.HasValue && retryAfter.Delta.Value > TimeSpan.Zero)
                 {
-                    return retryAfter.Delta.Value;
+                    return ClampRetryAfter(retryAfter.Delta.Value);
                 }
 
                 if (retryAfter.Date.HasValue)
@@ -1565,12 +1589,17 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                     var delta = retryAfter.Date.Value - DateTimeOffset.UtcNow;
                     if (delta > TimeSpan.Zero)
                     {
-                        return delta;
+                        return ClampRetryAfter(delta);
                     }
                 }
             }
 
             return fallback;
+        }
+
+        private static TimeSpan ClampRetryAfter(TimeSpan delay)
+        {
+            return delay > MaxRetryAfterDelay ? MaxRetryAfterDelay : delay;
         }
 
         // Shared by metadata lookups and the episode-image fallback so all Jikan traffic uses the

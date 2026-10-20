@@ -375,6 +375,12 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 return cached;
             }
 
+            if (!ImageUrlValidator.IsAllowed(url))
+            {
+                _logger.LogDebug("Skipping image size probe for URL outside the allowed image hosts: {Url}", url);
+                return null;
+            }
+
             try
             {
                 using var request = new HttpRequestMessage(HttpMethod.Get, url);

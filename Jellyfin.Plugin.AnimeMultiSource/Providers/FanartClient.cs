@@ -59,6 +59,11 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
         public Task<HttpResponseMessage> GetImageResponseAsync(string url, CancellationToken cancellationToken)
         {
+            if (!ImageUrlValidator.IsAllowed(url))
+            {
+                return Task.FromResult(ImageHttpClient.BadRequest());
+            }
+
             return _httpClient.GetAsync(url, cancellationToken);
         }
     }

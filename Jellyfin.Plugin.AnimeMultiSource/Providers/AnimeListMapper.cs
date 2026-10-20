@@ -55,6 +55,13 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                     return;
                 }
 
+                // Another caller may have failed while this one waited for the lock; honor the
+                // backoff instead of immediately retrying the download.
+                if (DateTimeOffset.UtcNow - _lastFailure < FailureBackoff)
+                {
+                    return;
+                }
+
                 _logger.LogInformation("Loading anime lists from Fribb...");
 
                 var options = new JsonSerializerOptions
@@ -77,7 +84,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                     ?? new Dictionary<string, AnimeMapping>();
 
                 var mappingsByImdb = mappings?
-                    .SelectMany(m => m.imdb_id.Select(id => (id, m)))
+                    .SelectMany(m => (m.imdb_id ?? Enumerable.Empty<string>()).Select(id => (id, m)))
                     .Where(x => !string.IsNullOrEmpty(x.id))
                     .GroupBy(x => x.id)
                     .ToDictionary(g => g.Key, g => SelectPreferredMapping(g.Select(x => x.m)))

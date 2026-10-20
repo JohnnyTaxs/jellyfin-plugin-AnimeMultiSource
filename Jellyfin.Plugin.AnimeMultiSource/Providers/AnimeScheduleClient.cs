@@ -8,6 +8,7 @@ using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 
@@ -21,6 +22,8 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
         private const string BaseUrl = "https://animeschedule.net/api/v3";
 
         private static readonly TimeSpan AnimeDetailCacheDuration = TimeSpan.FromDays(7);
+        private static readonly TimeSpan AnimeDetailNegativeCacheDuration = TimeSpan.FromMinutes(30);
+        private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(20);
         private static readonly TimeSpan TimetableCacheDuration = TimeSpan.FromHours(6);
         private static readonly ConcurrentDictionary<long, CacheEntry<AnimeDetail?>> AnimeDetailCache = new();
         private static readonly ConcurrentDictionary<long, CacheEntry<AnimeDetail?>> AnimeDetailByAniDbCache = new();
@@ -82,9 +85,15 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
             EnsurePersistentCacheLoaded();
 
-            if (cache.TryGetValue(cacheKey, out var cached) && DateTimeOffset.UtcNow - cached.CachedAt < AnimeDetailCacheDuration)
+            if (cache.TryGetValue(cacheKey, out var cached))
             {
-                return cached.Data;
+                // A miss (id not in AnimeSchedule yet) is cached briefly, not for the full week:
+                // a newly added title, or a transient empty response, must not stick for days.
+                var ttl = cached.Data == null ? AnimeDetailNegativeCacheDuration : AnimeDetailCacheDuration;
+                if (DateTimeOffset.UtcNow - cached.CachedAt < ttl)
+                {
+                    return cached.Data;
+                }
             }
 
             try
@@ -152,9 +161,10 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
         private async Task<HttpResponseMessage?> SendAsync(string url)
         {
-            var request = new HttpRequestMessage(HttpMethod.Get, url);
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
-            return await _httpClient.SendAsync(request);
+            using var timeout = new CancellationTokenSource(RequestTimeout);
+            return await _httpClient.SendAsync(request, timeout.Token);
         }
 
         private void EnsurePersistentCacheLoaded()

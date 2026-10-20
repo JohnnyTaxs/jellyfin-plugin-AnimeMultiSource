@@ -66,19 +66,32 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             var episodes = new List<TvdbEpisode>();
             var nextUrl = $"{BaseUrl}/series/{seriesId}/episodes/default?page=0";
             var pageGuard = 0;
+            var complete = true;
 
             while (!string.IsNullOrEmpty(nextUrl) && pageGuard < 20)
             {
                 pageGuard++;
-                var response = await SendAuthorizedAsync(nextUrl, cancellationToken);
+
+                // Never follow a continuation URL outside TVDB's API host; a compromised or
+                // malformed response must not redirect the plugin to an arbitrary server.
+                if (!IsAllowedTvdbApiUrl(nextUrl))
+                {
+                    _logger.LogWarning("Refusing TVDB continuation URL outside api4.thetvdb.com: {Url}", nextUrl);
+                    complete = false;
+                    break;
+                }
+
+                using var response = await SendAuthorizedAsync(nextUrl, cancellationToken);
                 if (response == null)
                 {
+                    complete = false;
                     break;
                 }
 
                 if (!response.IsSuccessStatusCode)
                 {
                     _logger.LogWarning("TVDB request for {Url} failed with status {Status}", nextUrl, response.StatusCode);
+                    complete = false;
                     break;
                 }
 
@@ -93,10 +106,29 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 nextUrl = data?.Links?.Next;
             }
 
+            if (!string.IsNullOrEmpty(nextUrl))
+            {
+                // Hit the page guard with pages still pending: the list is incomplete.
+                complete = false;
+            }
+
+            if (!complete)
+            {
+                _logger.LogWarning("Not caching incomplete TVDB episode list for series {SeriesId} ({Count} episodes so far)", seriesId, episodes.Count);
+                return episodes;
+            }
+
             _episodeCache[seriesId] = new TvdbEpisodeCacheEntry(DateTimeOffset.UtcNow, new List<TvdbEpisode>(episodes));
             _logger.LogInformation("Cached {Count} TVDB episodes for series {SeriesId}", episodes.Count, seriesId);
 
             return episodes;
+        }
+
+        private static bool IsAllowedTvdbApiUrl(string? url)
+        {
+            return Uri.TryCreate(url, UriKind.Absolute, out var uri)
+                && uri.Scheme == Uri.UriSchemeHttps
+                && string.Equals(uri.Host, "api4.thetvdb.com", StringComparison.OrdinalIgnoreCase);
         }
 
         public Task<HttpResponseMessage> GetImageAsync(string url, CancellationToken cancellationToken)
@@ -137,7 +169,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
         public async Task<TvdbTranslation?> GetEpisodeTranslationAsync(int episodeId, string language, CancellationToken cancellationToken)
         {
             var url = $"{BaseUrl}/episodes/{episodeId}/translations/{language}";
-            var response = await SendAuthorizedAsync(url, cancellationToken);
+            using var response = await SendAuthorizedAsync(url, cancellationToken);
             if (response == null || !response.IsSuccessStatusCode)
             {
                 _logger.LogDebug("TVDB translation request failed for episode {EpisodeId} lang {Language} (status: {Status})",
@@ -153,7 +185,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
         public async Task<TvdbEpisode?> GetEpisodeByIdAsync(int episodeId, CancellationToken cancellationToken)
         {
             var url = $"{BaseUrl}/episodes/{episodeId}";
-            var response = await SendAuthorizedAsync(url, cancellationToken);
+            using var response = await SendAuthorizedAsync(url, cancellationToken);
             if (response == null || !response.IsSuccessStatusCode)
             {
                 _logger.LogDebug("TVDB episode lookup failed for id {EpisodeId} (status: {Status})", episodeId, response?.StatusCode);
@@ -174,7 +206,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             }
 
             var url = $"{BaseUrl}/series/{seriesId}/extended";
-            var response = await SendAuthorizedAsync(url, cancellationToken);
+            using var response = await SendAuthorizedAsync(url, cancellationToken);
             if (response == null || !response.IsSuccessStatusCode)
             {
                 _logger.LogDebug("TVDB series extended request failed for id {SeriesId} (status: {Status})", seriesId, response?.StatusCode);
@@ -204,6 +236,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
             var response = await _httpClient.SendAsync(request, cancellationToken);
+            request.Dispose();
             if (response.StatusCode == HttpStatusCode.Unauthorized)
             {
                 _logger.LogInformation("TVDB token expired, refreshing token and retrying {Url}", url);
@@ -216,9 +249,9 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 }
 
                 response.Dispose();
-                request = new HttpRequestMessage(HttpMethod.Get, url);
-                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-                response = await _httpClient.SendAsync(request, cancellationToken);
+                using var retryRequest = new HttpRequestMessage(HttpMethod.Get, url);
+                retryRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+                response = await _httpClient.SendAsync(retryRequest, cancellationToken);
             }
 
             return response;
@@ -270,6 +303,10 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 }
 
                 return _token;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception ex)
             {

@@ -251,7 +251,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
         public Task<HttpResponseMessage> GetImageResponse(string url, CancellationToken cancellationToken)
         {
-            return ImageHttpClient.Instance.GetAsync(url, cancellationToken);
+            return ImageHttpClient.GetAsync(url, cancellationToken);
         }
     }
 }

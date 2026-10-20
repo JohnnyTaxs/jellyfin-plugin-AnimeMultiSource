@@ -163,7 +163,9 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 using var response = await GetWithTimeoutAsync(_jikanClient, url, cancellationToken);
                 if (!response.IsSuccessStatusCode)
                 {
-                    if ((int)response.StatusCode >= 500)
+                    // 429 is a rate-limit failure, not a success: count it toward the Jikan pause
+                    // instead of clearing the failure streak.
+                    if ((int)response.StatusCode >= 500 || (int)response.StatusCode == 429)
                     {
                         ApiService.RecordJikanResult(false, context, $"HTTP {(int)response.StatusCode}", _logger);
                     }
@@ -704,9 +706,10 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
         public async Task<HttpResponseMessage> GetImageResponse(string url, CancellationToken cancellationToken)
         {
             var normalizedUrl = TvdbApiClient.NormalizeImageUrl(url);
-            if (normalizedUrl == null)
+            if (normalizedUrl == null || !ImageUrlValidator.IsAllowed(normalizedUrl))
             {
-                throw new InvalidOperationException("TVDB returned an invalid episode image URL.");
+                _logger.LogWarning("Refusing episode image URL outside the allowed image hosts: {Url}", url);
+                return ImageHttpClient.BadRequest();
             }
 
             var response = await _tvdbClient.GetImageAsync(normalizedUrl, cancellationToken);

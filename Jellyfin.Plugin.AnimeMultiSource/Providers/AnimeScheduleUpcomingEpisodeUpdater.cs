@@ -29,9 +29,27 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
         // ahead doesn't risk showing a made-up title, only a date that may still shift.
         private const int LookaheadWeeks = 4;
 
+        // One client for the whole process: creating (and disposing) an HttpClient per series
+        // refresh leaks sockets and defeats connection pooling.
+        private static readonly HttpClient Http = CreateHttpClient();
+
         private readonly ILibraryManager _libraryManager;
         private readonly ILocalizationManager _localization;
         private readonly ILogger _logger;
+
+        private static HttpClient CreateHttpClient()
+        {
+            var handler = new HttpClientHandler
+            {
+                AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
+            };
+            var client = new HttpClient(handler)
+            {
+                Timeout = TimeSpan.FromSeconds(20)
+            };
+            client.DefaultRequestHeaders.Add("User-Agent", "Jellyfin-AnimeMultiSource-Plugin/1.0");
+            return client;
+        }
 
         public AnimeScheduleUpcomingEpisodeUpdater(ILibraryManager libraryManager, ILocalizationManager localization, ILogger logger)
         {
@@ -63,12 +81,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
             try
             {
-                var handler = new HttpClientHandler
-                {
-                    AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
-                };
-                using var httpClient = new HttpClient(handler);
-                httpClient.DefaultRequestHeaders.Add("User-Agent", "Jellyfin-AnimeMultiSource-Plugin/1.0");
+                var httpClient = Http;
                 var scheduleClient = new AnimeScheduleClient(httpClient, _logger, config.AnimeScheduleApiKey);
                 var apiService = new ApiService(httpClient, _logger);
 

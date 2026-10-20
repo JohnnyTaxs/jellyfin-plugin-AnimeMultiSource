@@ -144,6 +144,11 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
         public Task<HttpResponseMessage> GetImageResponse(string url, CancellationToken cancellationToken)
         {
+            if (!ImageUrlValidator.IsAllowed(url))
+            {
+                return Task.FromResult(ImageHttpClient.BadRequest());
+            }
+
             return _tvdbClient.GetImageAsync(url, cancellationToken);
         }
 
