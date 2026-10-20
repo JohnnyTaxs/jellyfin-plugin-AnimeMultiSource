@@ -21,8 +21,61 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj', 'Directory.Build.props') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Verify version consistency
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' Directory.Build.props | head -1)
+          build_version=$(sed -n 's/^version: "\(.*\)"/\1/p' build.yaml | head -1)
+          plugin_version=$(jq -r .version Jellyfin.Plugin.AnimeMultiSource/plugin.json)
+          if [[ -z "$version" || "$version" != "$build_version" || "$version" != "$plugin_version" ]]; then
+            echo "::error::Version mismatch: Directory.Build.props='$version' build.yaml='$build_version' plugin.json='$plugin_version'"
+            exit 1
+          fi
+          echo "Version $version"
+
       - name: Restore dependencies
         run: dotnet restore jellyfin-plugin-AnimeMultiSource.sln
 
       - name: Build plugin
         run: dotnet build jellyfin-plugin-AnimeMultiSource.sln -c Release --no-restore
+
+      - name: Publish package
+        run: dotnet publish Jellyfin.Plugin.AnimeMultiSource/Jellyfin.Plugin.AnimeMultiSource.csproj -c Release --no-restore -o publish
+
+      - name: Validate package contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          for required in "publish/Jellyfin.Plugin.AnimeMultiSource.dll" "publish/plugin.json"; do
+            if [[ ! -f "$required" ]]; then
+              echo "::error::Package is missing $required"
+              exit 1
+            fi
+          done
+
+          # Jellyfin supplies these at runtime; bundling them breaks interface discovery.
+          forbidden=$(find publish -maxdepth 1 -type f \
+            \( -name 'MediaBrowser.*.dll' -o -name 'Emby.*.dll' -o -name 'Jellyfin.*.dll' \) \
+            ! -name 'Jellyfin.Plugin.AnimeMultiSource.dll' -print)
+          if [[ -n "$forbidden" ]]; then
+            echo "::error::Package contains Jellyfin server assemblies:"
+            echo "$forbidden"
+            exit 1
+          fi
+
+          expected=$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' Directory.Build.props | head -1)
+          actual=$(jq -r .version publish/plugin.json)
+          if [[ "$actual" != "$expected" ]]; then
+            echo "::error::Published plugin.json version '$actual' does not match '$expected'"
+            exit 1
+          fi
+          echo "Package OK for version $expected"

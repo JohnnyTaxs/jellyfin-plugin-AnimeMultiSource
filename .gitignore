@@ -119,3 +119,7 @@ artifacts
 /notes
 dist/
 /logs
+
+# Local tooling and OS metadata
+.DS_Store
+.opencode/

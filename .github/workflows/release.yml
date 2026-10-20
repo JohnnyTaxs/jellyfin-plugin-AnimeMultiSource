@@ -1,4 +1,4 @@
-name: Build and Release
+name: Release
 
 on:
   push:
@@ -7,6 +7,10 @@ on:
 
 permissions:
   contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -22,66 +26,153 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      - name: Verify tag matches project version
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj', 'Directory.Build.props') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Verify tag and version consistency
         shell: bash
         run: |
+          set -euo pipefail
           tag_version="${GITHUB_REF_NAME#v}"
-          project_version=$(sed -n 's/.*<Version>\(.*\)<\/Version>.*/\1/p' Jellyfin.Plugin.AnimeMultiSource/Jellyfin.Plugin.AnimeMultiSource.csproj | head -1)
-          if [[ "$tag_version" != "$project_version" ]]; then
-            echo "Tag version $tag_version does not match project version $project_version"
+          props_version=$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' Directory.Build.props | head -1)
+          build_version=$(sed -n 's/^version: "\(.*\)"/\1/p' build.yaml | head -1)
+          plugin_version=$(jq -r .version Jellyfin.Plugin.AnimeMultiSource/plugin.json)
+          if [[ -z "$props_version" || "$tag_version" != "$props_version" || "$tag_version" != "$build_version" || "$tag_version" != "$plugin_version" ]]; then
+            echo "::error::Tag '$tag_version' must match Directory.Build.props='$props_version' build.yaml='$build_version' plugin.json='$plugin_version'"
             exit 1
           fi
+          echo "Releasing $tag_version"
 
       - name: Restore dependencies
         run: dotnet restore jellyfin-plugin-AnimeMultiSource.sln
 
-      - name: Build release package
+      - name: Build plugin
+        run: dotnet build jellyfin-plugin-AnimeMultiSource.sln -c Release --no-restore
+
+      - name: Publish package
         run: dotnet publish Jellyfin.Plugin.AnimeMultiSource/Jellyfin.Plugin.AnimeMultiSource.csproj -c Release --no-restore -o publish
 
-      - name: Create plugin archive
+      - name: Validate package contents
         shell: bash
         run: |
+          set -euo pipefail
+          for required in "publish/Jellyfin.Plugin.AnimeMultiSource.dll" "publish/plugin.json"; do
+            if [[ ! -f "$required" ]]; then
+              echo "::error::Package is missing $required"
+              exit 1
+            fi
+          done
+
+          forbidden=$(find publish -maxdepth 1 -type f \
+            \( -name 'MediaBrowser.*.dll' -o -name 'Emby.*.dll' -o -name 'Jellyfin.*.dll' \) \
+            ! -name 'Jellyfin.Plugin.AnimeMultiSource.dll' -print)
+          if [[ -n "$forbidden" ]]; then
+            echo "::error::Package contains Jellyfin server assemblies:"
+            echo "$forbidden"
+            exit 1
+          fi
+
+          expected=$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' Directory.Build.props | head -1)
+          actual=$(jq -r .version publish/plugin.json)
+          if [[ "$actual" != "$expected" ]]; then
+            echo "::error::Published plugin.json version '$actual' does not match '$expected'"
+            exit 1
+          fi
+
+      - name: Create release archive
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
           (cd publish && zip -q -r "../AnimeMultiSource_v${version}.zip" .)
-          md5sum "AnimeMultiSource_v${version}.zip"
+          checksum=$(md5sum "AnimeMultiSource_v${version}.zip" | awk '{print toupper($1)}')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "checksum=$checksum" >> "$GITHUB_OUTPUT"
+          echo "::notice::AnimeMultiSource_v${version}.zip MD5 $checksum"
 
-      - name: Create GitHub release
+      - name: Create or update GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          version="${GITHUB_REF_NAME#v}"
-          gh release create "$GITHUB_REF_NAME" "AnimeMultiSource_v${version}.zip" \
-            --title "Anime Multi Source ${version}" \
-            --generate-notes
-
-      - name: Update manifest checksum
         shell: bash
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          set -euo pipefail
+          version="${{ steps.package.outputs.version }}"
           asset="AnimeMultiSource_v${version}.zip"
-          checksum=$(md5sum "$asset" | awk '{print toupper($1)}')
-          source_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${asset}"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$asset" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "$asset" \
+              --title "Anime Multi Source ${version}" \
+              --generate-notes
+          fi
+
+      - name: Prepend release to plugin manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ steps.package.outputs.version }}"
+          checksum="${{ steps.package.outputs.checksum }}"
+          source_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/AnimeMultiSource_v${version}.zip"
           changelog_url="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${GITHUB_REF_NAME}"
           timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          jq --arg version "$version" \
-             --arg source_url "$source_url" \
-             --arg changelog_url "$changelog_url" \
-             --arg checksum "$checksum" \
-             --arg timestamp "$timestamp" \
-             '.[0].versions = [{version: $version, changelog: $changelog_url, targetAbi: "12.0.0.0", sourceUrl: $source_url, checksum: $checksum, timestamp: $timestamp}]' \
-             manifest.json > manifest.json.tmp
-          mv manifest.json.tmp manifest.json
-
-      - name: Commit updated manifest
-        shell: bash
-        run: |
+          target_abi=$(sed -n 's/^targetAbi: "\(.*\)"/\1/p' build.yaml | head -1)
           default_branch="${{ github.event.repository.default_branch }}"
-          cp manifest.json /tmp/generated-manifest.json
-          git fetch origin "$default_branch"
-          git switch -C "$default_branch" "origin/$default_branch"
-          cp /tmp/generated-manifest.json manifest.json
+
+          if [[ -z "$target_abi" ]]; then
+            echo "::error::Could not read targetAbi from build.yaml"
+            exit 1
+          fi
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add manifest.json
-          git commit -m "Update manifest for ${GITHUB_REF_NAME}" || exit 0
-          git push origin "$default_branch"
+
+          pushed=false
+          for attempt in 1 2 3; do
+            git fetch origin "$default_branch"
+            git switch -C "$default_branch" "origin/$default_branch"
+
+            jq --arg version "$version" \
+               --arg changelog_url "$changelog_url" \
+               --arg source_url "$source_url" \
+               --arg checksum "$checksum" \
+               --arg timestamp "$timestamp" \
+               --arg target_abi "$target_abi" \
+               '.[0].versions = ([{
+                  version: $version,
+                  changelog: $changelog_url,
+                  targetAbi: $target_abi,
+                  sourceUrl: $source_url,
+                  checksum: $checksum,
+                  timestamp: $timestamp
+                }] + (.[0].versions | map(select(.version != $version))))' \
+               manifest.json > manifest.json.tmp
+            mv manifest.json.tmp manifest.json
+
+            git add manifest.json
+            if git diff --cached --quiet; then
+              echo "Manifest already up to date."
+              pushed=true
+              break
+            fi
+
+            git commit -m "Update manifest for ${GITHUB_REF_NAME}"
+            if git push origin "$default_branch"; then
+              echo "Manifest updated on $default_branch."
+              pushed=true
+              break
+            fi
+
+            echo "Manifest push failed (attempt $attempt); retrying from the latest $default_branch."
+            sleep 5
+          done
+
+          if [[ "$pushed" != true ]]; then
+            echo "::error::Could not update manifest.json on $default_branch after 3 attempts."
+            exit 1
+          fi
