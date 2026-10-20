@@ -12,8 +12,11 @@ using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 {
-    public class AnimeMultiSourceProvider : IRemoteMetadataProvider<Series, SeriesInfo>
+    public class AnimeMultiSourceProvider : IRemoteMetadataProvider<Series, SeriesInfo>, IHasOrder
     {
+        // Run before Jellyfin's core providers (default order 50) for anime libraries.
+        public int Order => 10;
+
         private readonly ILogger<AnimeMultiSourceProvider> _logger;
         private readonly AnimeMultiSourceService _animeService;
         private readonly ApiService _apiService;

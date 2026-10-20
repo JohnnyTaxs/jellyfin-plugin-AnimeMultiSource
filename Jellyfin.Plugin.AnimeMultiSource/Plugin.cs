@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using MediaBrowser.Common.Plugins;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Model.Plugins;
@@ -112,6 +113,13 @@ namespace Jellyfin.Plugin.AnimeMultiSource
                 }
 
                 var ownDllName = Path.GetFileName(AssemblyFilePath);
+                var currentVersion = GetAssemblyVersion(AssemblyFilePath);
+                if (currentVersion == null)
+                {
+                    // Without a reliable version comparison, deleting a sibling could remove the
+                    // newer, active install. Jellyfin's own discovery cleanup can handle it.
+                    return;
+                }
 
                 foreach (var directory in Directory.GetDirectories(pluginsPath))
                 {
@@ -129,9 +137,18 @@ namespace Jellyfin.Plugin.AnimeMultiSource
                         continue;
                     }
 
-                    if (!File.Exists(Path.Combine(directory, ownDllName)))
+                    var candidateDll = Path.Combine(directory, ownDllName);
+                    if (!File.Exists(candidateDll))
                     {
                         // Doesn't look like a version of this same plugin; leave it alone.
+                        continue;
+                    }
+
+                    var candidateVersion = GetAssemblyVersion(candidateDll);
+                    if (candidateVersion == null || candidateVersion >= currentVersion)
+                    {
+                        // Never delete a same-or-newer version: two loaded versions must not race
+                        // to delete each other's directories during startup.
                         continue;
                     }
 
@@ -149,6 +166,18 @@ namespace Jellyfin.Plugin.AnimeMultiSource
             catch (Exception ex)
             {
                 logger.LogWarning(ex, "Failed to check for stale plugin version folders.");
+            }
+        }
+
+        private static Version? GetAssemblyVersion(string path)
+        {
+            try
+            {
+                return AssemblyName.GetAssemblyName(path).Version;
+            }
+            catch
+            {
+                return null;
             }
         }
 

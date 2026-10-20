@@ -14,8 +14,11 @@ using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 {
-    public class JikanEpisodeImageProvider : IRemoteImageProvider
+    public class JikanEpisodeImageProvider : IRemoteImageProvider, IHasOrder
     {
+        // Run before Jellyfin's core providers (default order 50) for anime libraries.
+        public int Order => 15;
+
         private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(15);
         private readonly ILogger<JikanEpisodeImageProvider> _logger;
         private readonly HttpClient _httpClient;

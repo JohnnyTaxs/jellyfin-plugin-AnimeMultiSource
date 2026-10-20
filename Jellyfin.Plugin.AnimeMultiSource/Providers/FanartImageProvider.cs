@@ -17,8 +17,11 @@ using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 {
-    public class FanartImageProvider : IRemoteImageProvider
+    public class FanartImageProvider : IRemoteImageProvider, IHasOrder
     {
+        // Run before Jellyfin's core providers (default order 50) for anime libraries.
+        public int Order => 20;
+
         private readonly ILogger<FanartImageProvider> _logger;
         private FanartClient _fanartClient;
         private readonly TvdbApiClient _tvdbClient;

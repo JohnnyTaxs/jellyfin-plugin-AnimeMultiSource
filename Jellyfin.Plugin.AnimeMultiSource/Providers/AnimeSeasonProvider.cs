@@ -18,8 +18,11 @@ using Jellyfin.Plugin.AnimeMultiSource.Configuration;
 
 namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 {
-    public class AnimeSeasonProvider : IRemoteMetadataProvider<Season, SeasonInfo>
+    public class AnimeSeasonProvider : IRemoteMetadataProvider<Season, SeasonInfo>, IHasOrder
     {
+        // Run before Jellyfin's core providers (default order 50) for anime libraries.
+        public int Order => 10;
+
         private readonly ILogger<AnimeSeasonProvider> _logger;
         private readonly ApiService _apiService;
         private readonly PlexMatchParser _plexMatchParser;
