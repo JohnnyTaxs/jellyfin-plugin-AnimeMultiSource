@@ -32,18 +32,37 @@ namespace Jellyfin.Plugin.AnimeMultiSource
             try
             {
                 var currentPath = ConfigurationFilePath;
-                if (File.Exists(currentPath) || !Directory.Exists(applicationPaths.PluginConfigurationsPath))
+                if (!Directory.Exists(applicationPaths.PluginConfigurationsPath))
                 {
                     return;
+                }
+
+                if (File.Exists(currentPath))
+                {
+                    try
+                    {
+                        var existing = XmlSerializer.DeserializeFromFile(
+                            typeof(Configuration.PluginConfiguration), currentPath) as Configuration.PluginConfiguration;
+                        if (existing != null)
+                        {
+                            return;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        logger.LogDebug(ex, "Current configuration file {Path} is unreadable; attempting legacy migration.", currentPath);
+                    }
                 }
 
                 var candidates = Directory.GetFiles(applicationPaths.PluginConfigurationsPath, "*.xml")
                     .Where(path =>
                     {
                         var fileName = Path.GetFileNameWithoutExtension(path);
-                        return fileName.Contains("AnimeMultiSource", StringComparison.OrdinalIgnoreCase)
-                            || fileName.Contains("Anime Multi Source", StringComparison.OrdinalIgnoreCase);
-                    });
+                        return !string.Equals(path, currentPath, StringComparison.OrdinalIgnoreCase)
+                            && (fileName.Contains("AnimeMultiSource", StringComparison.OrdinalIgnoreCase)
+                                || fileName.Contains("Anime Multi Source", StringComparison.OrdinalIgnoreCase));
+                    })
+                    .OrderByDescending(File.GetLastWriteTimeUtc);
 
                 foreach (var candidate in candidates)
                 {

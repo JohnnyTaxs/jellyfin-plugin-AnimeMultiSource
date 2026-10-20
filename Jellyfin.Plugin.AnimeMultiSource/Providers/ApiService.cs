@@ -1456,6 +1456,8 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
         {
             lock (AniDbRateLock)
             {
+                // Never let a zero/negative value disable AniDB throttling.
+                var safeConfiguredRateLimitMs = Math.Max(1000, configuredRateLimitMs);
                 var today = DateTime.UtcNow.Date;
                 if (today != _aniDbDailyCountDate)
                 {
@@ -1466,8 +1468,8 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
                 var isSlowMode = _aniDbDailyRequestCount >= AniDbDailySoftCap;
                 var effective = isSlowMode
-                    ? Math.Max(AniDbSlowRateLimitMs, configuredRateLimitMs)
-                    : configuredRateLimitMs;
+                    ? Math.Max(AniDbSlowRateLimitMs, safeConfiguredRateLimitMs)
+                    : safeConfiguredRateLimitMs;
 
                 _aniDbDailyRequestCount++;
                 return new AniDbRateLimitContext(effective, _aniDbDailyRequestCount, isSlowMode, _aniDbDailyCountDate);

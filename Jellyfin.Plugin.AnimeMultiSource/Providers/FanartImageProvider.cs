@@ -20,13 +20,14 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
     public class FanartImageProvider : IRemoteImageProvider
     {
         private readonly ILogger<FanartImageProvider> _logger;
-        private readonly FanartClient _fanartClient;
+        private FanartClient _fanartClient;
         private readonly TvdbApiClient _tvdbClient;
         private readonly ApiService _apiService;
-        private readonly PluginConfiguration _config;
+        private PluginConfiguration _config;
         private readonly HttpClient _httpClient;
-        private readonly HashSet<string> _fanartLanguageOverride;
-        private readonly bool _hasLanguageOverride;
+        private HashSet<string> _fanartLanguageOverride;
+        private bool _hasLanguageOverride;
+        private string _fanartApiKey = string.Empty;
         private readonly ConcurrentDictionary<string, (int Width, int Height)> _fanartSizeCache = new(StringComparer.OrdinalIgnoreCase);
 
         public FanartImageProvider(ILogger<FanartImageProvider> logger)
@@ -43,7 +44,8 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             httpClient.DefaultRequestHeaders.Add("User-Agent", "Jellyfin-AnimeMultiSource-Plugin/1.0");
 
             _httpClient = httpClient;
-            _fanartClient = new FanartClient(httpClient, logger, _config.PersonalApiKey ?? string.Empty);
+            _fanartApiKey = _config.PersonalApiKey ?? string.Empty;
+            _fanartClient = new FanartClient(httpClient, logger, _fanartApiKey);
             _tvdbClient = new TvdbApiClient(httpClient, logger, Constants.TvdbProjectApiKey);
             _apiService = new ApiService(httpClient, logger);
             _fanartLanguageOverride = ParseFanartLanguages(_config.FanartLanguages);
@@ -71,7 +73,22 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
         public async Task<IEnumerable<RemoteImageInfo>> GetImages(BaseItem item, CancellationToken cancellationToken)
         {
-            if (ItemExclusion.IsExcluded(item, Plugin.GetConfigurationSafe(_logger)))
+            // Jellyfin keeps provider instances for the server lifetime; refresh settings here so
+            // saved config changes take effect without a restart.
+            _config = Plugin.GetConfigurationSafe(_logger);
+            var currentApiKey = _config.PersonalApiKey ?? string.Empty;
+            if (!string.Equals(currentApiKey, _fanartApiKey, StringComparison.Ordinal))
+            {
+                _fanartApiKey = currentApiKey;
+                _fanartClient = new FanartClient(_httpClient, _logger, _fanartApiKey);
+            }
+
+            _fanartLanguageOverride = ParseFanartLanguages(_config.FanartLanguages);
+            _hasLanguageOverride = !string.IsNullOrWhiteSpace(_config.FanartLanguages)
+                && !_config.FanartLanguages.Equals("all", StringComparison.OrdinalIgnoreCase)
+                && _fanartLanguageOverride.Count > 0;
+
+            if (ItemExclusion.IsExcluded(item, _config))
             {
                 return Array.Empty<RemoteImageInfo>();
             }

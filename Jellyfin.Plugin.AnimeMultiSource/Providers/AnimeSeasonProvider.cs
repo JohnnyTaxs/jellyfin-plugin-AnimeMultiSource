@@ -220,8 +220,18 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 return false;
             }
 
-            if (info.SeriesProviderIds == null ||
-                !TryGetValueIgnoreCase(info.SeriesProviderIds, Constants.AniListProviderId, out var seriesAniListId))
+            if (info.SeriesProviderIds == null || info.SeriesProviderIds.Count == 0)
+            {
+                return false;
+            }
+
+            // Match on any id the series has, not only AniList: a TVDB/IMDb-only series can
+            // still be excluded before the plugin ever writes an AniList id.
+            var providerIds = info.SeriesProviderIds
+                .Where(pair => !string.IsNullOrWhiteSpace(pair.Value))
+                .GroupBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(group => group.Key, group => group.First().Value, StringComparer.OrdinalIgnoreCase);
+            if (providerIds.Count == 0)
             {
                 return false;
             }
@@ -230,7 +240,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             {
                 IncludeItemTypes = new[] { BaseItemKind.Series },
                 Recursive = true,
-                HasAnyProviderId = new Dictionary<string, string> { [Constants.AniListProviderId] = seriesAniListId }
+                HasAnyProviderId = providerIds
             };
             var matches = _libraryManager.GetItemList(query).OfType<Series>().ToList();
             return matches.Count > 0 && matches.All(series => ItemExclusion.IsExcluded(series.Path, _config));

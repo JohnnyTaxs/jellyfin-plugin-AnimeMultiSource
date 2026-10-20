@@ -62,10 +62,10 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Configuration
 
             // Title settings
             TitleField = TitleFieldType.Title;
-            TitleDataSource = DataSourceType.AniDB;
+            TitleDataSource = DataSourceType.Anilist;
 
             OriginalTitleField = OriginalTitleFieldType.TitleJapanese;
-            OriginalTitleDataSource = DataSourceType.AniDB;
+            OriginalTitleDataSource = DataSourceType.Anilist;
 
             // Runtime
             RuntimeDataSource = RuntimeDataSourceType.Anilist;
@@ -133,7 +133,7 @@ Action";
             FanartProbeImageSize = true;
             BackdropMinWidth = 1920;
             BackdropMinHeight = 1080;
-            BackdropMinAspectRatio = 1.78;
+            BackdropMinAspectRatio = 16.0 / 9.0;
 
             // AnimeSchedule.net
             AnimeScheduleApiKey = string.Empty;

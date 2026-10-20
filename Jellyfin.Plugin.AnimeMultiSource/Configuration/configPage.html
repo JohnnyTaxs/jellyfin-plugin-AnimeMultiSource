@@ -39,10 +39,7 @@
                     <div class="selectContainer">
                         <label class="selectLabel" for="titleDataSource">Title Data Source</label>
                         <select is="emby-select" id="titleDataSource" name="titleDataSource" class="emby-select-withcolor emby-select">
-                            <option value="AniDB">AniDB</option>
-                            <option value="Anilist">Anilist</option>
-                            <option value="AniSearch">AniSearch</option>
-                            <option value="Kitsu">Kitsu</option>
+                            <option value="Anilist">AniList</option>
                             <option value="Jikan">Jikan</option>
                         </select>
                     </div>
@@ -60,10 +57,7 @@
                     <div class="selectContainer">
                         <label class="selectLabel" for="originalTitleDataSource">Original Title Data Source</label>
                         <select is="emby-select" id="originalTitleDataSource" name="originalTitleDataSource" class="emby-select-withcolor emby-select">
-                            <option value="AniDB">AniDB</option>
-                            <option value="Anilist">Anilist</option>
-                            <option value="AniSearch">AniSearch</option>
-                            <option value="Kitsu">Kitsu</option>
+                            <option value="Anilist">AniList</option>
                             <option value="Jikan">Jikan</option>
                         </select>
                     </div>
@@ -103,7 +97,7 @@
                     <h2>Fanart.tv Artwork</h2>
                     <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="personalApiKey">Personal API Key</label>
-                        <input id="personalApiKey" name="personalApiKey" type="text" is="emby-input" autocomplete="off" />
+                        <input id="personalApiKey" name="personalApiKey" type="password" is="emby-input" autocomplete="off" />
                         <div class="fieldDescription">Personal API key improves freshness of Fanart.tv images.</div>
                     </div>
                     <div class="inputContainer">
@@ -118,7 +112,7 @@
                     </div>
                     <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="fanartLanguages">Artwork Languages</label>
-                        <input id="fanartLanguages" name="fanartLanguages" type="text" is="emby-input" autocomplete="off" />
+                        <input id="fanartLanguages" name="fanartLanguages" type="password" is="emby-input" autocomplete="off" />
                         <div class="fieldDescription">Optional override for Fanart.tv. Leave blank to use Jellyfin's language selection. Comma-separated codes (e.g., "en,ja,00"); use "all" for no filter. "00" means no language.</div>
                     </div>
                     <div class="checkboxContainer">
@@ -174,7 +168,7 @@
 
                     <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="chkAniDbRateLimit">AniDB Rate Limit</label>
-                        <input id="chkAniDbRateLimit" name="chkAniDbRateLimit" type="number" is="emby-input" min="0" />
+                        <input id="chkAniDbRateLimit" name="chkAniDbRateLimit" type="number" is="emby-input" min="1000" step="100" />
                         <div class="fieldDescription">This will prevent IP bans for requesting data too quickly.</div>
                     </div>
 
@@ -200,9 +194,9 @@
                 pluginUniqueId: "8eca6f17-71fe-4309-a670-3cae083f22bd",
                 aspectPresets: {
                     none: 0,
-                    "16x9": 1.78,
-                    "21x9": 2.33,
-                    "4x3": 1.33
+                    "16x9": 16 / 9,
+                    "21x9": 21 / 9,
+                    "4x3": 4 / 3
                 },
 
                 getAspectPreset: function (value) {
@@ -224,6 +218,11 @@
                     return presets[preset] || 0;
                 },
 
+                normalizeDataSource: function (value) {
+                    // Legacy configs may contain sources the plugin never implemented.
+                    return value === 'Jikan' ? 'Jikan' : 'Anilist';
+                },
+
                 loadConfiguration: function () {
                     Dashboard.showLoadingMsg();
 
@@ -231,10 +230,10 @@
                         // Title settings
                         document.getElementById('excludedPaths').value = config.ExcludedPaths || '';
                         document.getElementById('titleField').value = config.TitleField || 'Title';
-                        document.getElementById('titleDataSource').value = config.TitleDataSource || 'AniDB';
+                        document.getElementById('titleDataSource').value = AnimeMultiSourceConfigurationPage.normalizeDataSource(config.TitleDataSource);
 
                         document.getElementById('originalTitleField').value = config.OriginalTitleField || 'TitleJapanese';
-                        document.getElementById('originalTitleDataSource').value = config.OriginalTitleDataSource || 'AniDB';
+                        document.getElementById('originalTitleDataSource').value = AnimeMultiSourceConfigurationPage.normalizeDataSource(config.OriginalTitleDataSource);
 
                         // Runtime
                         document.getElementById('runtimeDataSource').value = config.RuntimeDataSource || 'Anilist';
@@ -257,12 +256,15 @@
                         document.getElementById('approvedGenres').value = config.ApprovedGenres || '';
 
                         // Limits
-                        document.getElementById('chkAniDbRateLimit').value = config.AniDbRateLimit;
+                        document.getElementById('chkAniDbRateLimit').value = config.AniDbRateLimit || 2000;
 
                         // AnimeSchedule.net
                         document.getElementById('animeScheduleApiKey').value = config.AnimeScheduleApiKey || '';
                         document.getElementById('animeScheduleMode').value = config.AnimeScheduleMode || 'Combined';
 
+                        Dashboard.hideLoadingMsg();
+                    }).catch(function (error) {
+                        console.error(error);
                         Dashboard.hideLoadingMsg();
                     });
                 },
@@ -300,7 +302,10 @@
                         config.ApprovedGenres = document.getElementById('approvedGenres').value;
 
                         // Limits
-                        config.AniDbRateLimit = document.getElementById('chkAniDbRateLimit').value;
+                        var aniDbRateLimit = parseInt(document.getElementById('chkAniDbRateLimit').value || '2000', 10);
+                        config.AniDbRateLimit = Number.isFinite(aniDbRateLimit) && aniDbRateLimit >= 1000
+                            ? aniDbRateLimit
+                            : 2000;
 
                         // AnimeSchedule.net
                         config.AnimeScheduleApiKey = document.getElementById('animeScheduleApiKey').value;
@@ -308,7 +313,14 @@
 
                         ApiClient.updatePluginConfiguration(AnimeMultiSourceConfigurationPage.pluginUniqueId, config).then(function (result) {
                             Dashboard.processPluginConfigurationUpdateResult(result);
+                        }).catch(function (error) {
+                            console.error(error);
+                            window.alert('Unable to save the configuration. Check the server log for details.');
+                            Dashboard.hideLoadingMsg();
                         });
+                    }).catch(function (error) {
+                        console.error(error);
+                        Dashboard.hideLoadingMsg();
                     });
                 },
             };
