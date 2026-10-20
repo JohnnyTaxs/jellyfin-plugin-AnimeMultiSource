@@ -240,7 +240,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                     variables = new { search = query }
                 };
 
-                await EnforceAniListRateLimitAsync();
+                await EnforceAniListRateLimitAsync(cancellationToken);
                 using var content = new StringContent(
                     JsonSerializer.Serialize(request),
                     System.Text.Encoding.UTF8,
@@ -1527,7 +1527,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
         // Shared by metadata lookups and the episode-image fallback so all Jikan traffic uses the
         // same spacing, pause state, and timeout regardless of which provider started it.
-        internal static async Task EnforceJikanRateLimitAsync()
+        internal static async Task EnforceJikanRateLimitAsync(CancellationToken cancellationToken = default)
         {
             int waitMs;
             lock (JikanRateLock)
@@ -1540,7 +1540,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
             if (waitMs > 0)
             {
-                await Task.Delay(waitMs);
+                await Task.Delay(waitMs, cancellationToken);
             }
         }
 
@@ -1601,7 +1601,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                     return null;
                 }
 
-                await EnforceJikanRateLimitAsync();
+                await EnforceJikanRateLimitAsync(cancellationToken);
                 HttpResponseMessage response;
                 try
                 {
@@ -1639,7 +1639,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                     var backoff = AddJitter(retryAfter > TimeSpan.FromSeconds(30) ? TimeSpan.FromSeconds(30) : retryAfter);
                     _logger.LogWarning("Jikan rate limited for {Context}; backing off {DelayMs} ms before retry {Attempt}", context, backoff.TotalMilliseconds, attempt);
                     response.Dispose();
-                    await Task.Delay(backoff);
+                    await Task.Delay(backoff, cancellationToken);
                     continue;
                 }
 
@@ -1656,7 +1656,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             return baseDelay + TimeSpan.FromMilliseconds(jitterMs);
         }
 
-        private async Task EnforceAniListRateLimitAsync()
+        private async Task EnforceAniListRateLimitAsync(CancellationToken cancellationToken = default)
         {
             int waitMs;
             int requestNumber;
@@ -1683,7 +1683,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             {
                 _logger.LogInformation("AniList rate limiting {Version}: waiting {WaitMs} ms before request #{CountInWindow} in current minute window starting {WindowStart}",
                     VersionTag, waitMs, requestNumber, windowStart.ToString("O"));
-                await Task.Delay(waitMs);
+                await Task.Delay(waitMs, cancellationToken);
             }
         }
 

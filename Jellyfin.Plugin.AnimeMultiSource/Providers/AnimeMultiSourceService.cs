@@ -8,6 +8,7 @@ using System.Threading; // Add this for Interlocked
 using System.Threading.Tasks;
 using MediaBrowser.Controller.Entities; // For PersonInfo
 using MediaBrowser.Controller.Providers;
+using MediaBrowser.Model.Entities;
 using Microsoft.Extensions.Logging;
 
 
@@ -140,24 +141,44 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             
             var seriesPath = info.Path;
 
-            // Look for .plexmatch file
+            // A .plexmatch is the preferred anchor, but a manual Identify must also work without
+            // one: Jellyfin puts the selected result's provider ids on SeriesInfo before refresh.
             var plexMatchPath = Path.Combine(seriesPath, Constants.PlexMatchFileName);
-            if (!File.Exists(plexMatchPath))
+            PlexMatchData plexMatchData;
+            if (File.Exists(plexMatchPath))
             {
-                _logger.LogWarning("***********************");
-                _logger.LogWarning("* no plexmatch file  *");
-                _logger.LogWarning("***********************");
-                return null;
+                _logger.LogInformation("Found .plexmatch file at {PlexMatchPath}", plexMatchPath);
+                var plexMatchContent = await File.ReadAllTextAsync(plexMatchPath);
+                plexMatchData = _plexMatchParser.ParsePlexMatch(plexMatchContent);
+            }
+            else
+            {
+                _logger.LogInformation("No .plexmatch file at {PlexMatchPath}; resolving from Identify provider ids", plexMatchPath);
+                plexMatchData = new PlexMatchData();
             }
 
-            _logger.LogInformation("Found .plexmatch file at {PlexMatchPath}", plexMatchPath);
+            if (string.IsNullOrWhiteSpace(plexMatchData.Title))
+            {
+                plexMatchData.Title = info.Name ?? string.Empty;
+            }
 
-            // Parse .plexmatch file
-            var plexMatchContent = await File.ReadAllTextAsync(plexMatchPath);
-            var plexMatchData = _plexMatchParser.ParsePlexMatch(plexMatchContent);
+            plexMatchData.Year ??= info.Year;
 
             _logger.LogInformation("Parsed .plexmatch data - Title: {Title}, Year: {Year}, TVDB: {TvdbId}, IMDb: {ImdbId}",
                 plexMatchData.Title, plexMatchData.Year, plexMatchData.TvdbId, plexMatchData.ImdbId);
+
+            var hasPlexMatchIds =
+                !string.IsNullOrEmpty(plexMatchData.TvdbId) ||
+                !string.IsNullOrEmpty(plexMatchData.ImdbId) ||
+                plexMatchData.TmdbId.HasValue ||
+                plexMatchData.AniListId.HasValue ||
+                plexMatchData.MalId.HasValue;
+
+            if (!hasPlexMatchIds && (info.ProviderIds == null || info.ProviderIds.Count == 0))
+            {
+                _logger.LogWarning("No .plexmatch ids or Identify provider ids for '{Title}'", plexMatchData.Title);
+                return null;
+            }
 
             // Ensure anime lists are loaded
             await _animeListMapper.LoadAnimeListsAsync();
@@ -178,6 +199,11 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                     ?? _animeListMapper.GetMappingByImdbId(plexMatchData.ImdbId);
             }
 
+            if (mapping == null && plexMatchData.TmdbId.HasValue)
+            {
+                mapping = _animeListMapper.GetMappingByTmdbId(plexMatchData.TmdbId.Value);
+            }
+
             // Direct AniList/MAL anchor: lets .plexmatch identify titles Fribb hasn't
             // cross-referenced to a TVDB/IMDb id yet (e.g. brand-new simulcasts).
             if (mapping == null && plexMatchData.AniListId.HasValue)
@@ -194,6 +220,15 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                     ?? new AnimeMapping { mal_id = plexMatchData.MalId.Value };
                 _logger.LogInformation("Resolved series '{Title}' via .plexmatch malid {MalId} (no TVDB/IMDb id needed)",
                     plexMatchData.Title, plexMatchData.MalId);
+            }
+
+            if (mapping == null)
+            {
+                mapping = ResolveMappingFromProviderIds(info);
+                if (mapping != null)
+                {
+                    _logger.LogInformation("Resolved series '{Title}' from Identify provider ids", plexMatchData.Title);
+                }
             }
 
             if (mapping == null)
@@ -363,6 +398,73 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             return await CreateCombinedMetadata(plexMatchData, mapping, jikanData, aniListData, rootAniListId, effectiveMalId, config, info.MetadataLanguage);
         }
 
+        private AnimeMapping? ResolveMappingFromProviderIds(SeriesInfo info)
+        {
+            var ids = info.ProviderIds;
+            if (ids == null)
+            {
+                return null;
+            }
+
+            if (TryGetProviderId(ids, Constants.AniListProviderId, out var aniListValue) &&
+                long.TryParse(aniListValue, out var aniListId))
+            {
+                return _animeListMapper.GetMappingByAniListId(aniListId)
+                    ?? new AnimeMapping { anilist_id = aniListId };
+            }
+
+            if (TryGetProviderId(ids, Constants.MalProviderId, out var malValue) &&
+                long.TryParse(malValue, out var malId))
+            {
+                return _animeListMapper.GetMappingByMalId(malId)
+                    ?? new AnimeMapping { mal_id = malId };
+            }
+
+            if (TryGetProviderId(ids, Constants.KitsuProviderId, out var kitsuValue) &&
+                long.TryParse(kitsuValue, out var kitsuId))
+            {
+                return _animeListMapper.GetMappingByKitsuId(kitsuId)
+                    ?? new AnimeMapping { kitsu_id = kitsuId };
+            }
+
+            if (TryGetProviderId(ids, MetadataProvider.Tmdb.ToString(), out var tmdbValue) &&
+                long.TryParse(tmdbValue, out var tmdbId))
+            {
+                return _animeListMapper.GetMappingByTmdbId(tmdbId);
+            }
+
+            if (TryGetProviderId(ids, MetadataProvider.Tvdb.ToString(), out var tvdbValue) &&
+                long.TryParse(tvdbValue, out var tvdbId))
+            {
+                return _animeListMapper.GetMappingByTvdbId(tvdbValue)
+                    ?? new AnimeMapping { tvdb_id = tvdbId };
+            }
+
+            if (TryGetProviderId(ids, MetadataProvider.Imdb.ToString(), out var imdbValue) &&
+                !string.IsNullOrWhiteSpace(imdbValue))
+            {
+                return _animeListMapper.GetMappingByImdbId(imdbValue)
+                    ?? new AnimeMapping { imdb_id = new[] { imdbValue } };
+            }
+
+            return null;
+        }
+
+        private static bool TryGetProviderId(IDictionary<string, string> ids, string key, out string value)
+        {
+            foreach (var pair in ids)
+            {
+                if (pair.Key.Equals(key, StringComparison.OrdinalIgnoreCase))
+                {
+                    value = pair.Value;
+                    return true;
+                }
+            }
+
+            value = string.Empty;
+            return false;
+        }
+
         private async Task<AnimeMetadata> CreateCombinedMetadata(
             PlexMatchData plexMatchData,
             AnimeMapping mapping,
@@ -408,9 +510,14 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 Title = plexMatchData.Title,
                 Year = plexMatchData.Year,
 
-                // Provider IDs from .plexmatch
-                TvdbId = plexMatchData.TvdbId,
-                ImdbId = plexMatchData.ImdbId,
+                // Provider IDs from .plexmatch, falling back to the mapping (manual Identify
+                // supplies ids on SeriesInfo, not in a .plexmatch file).
+                TvdbId = !string.IsNullOrEmpty(plexMatchData.TvdbId)
+                    ? plexMatchData.TvdbId
+                    : mapping.TvdbId?.ToString(),
+                ImdbId = !string.IsNullOrEmpty(plexMatchData.ImdbId)
+                    ? plexMatchData.ImdbId
+                    : mapping.imdb_id.FirstOrDefault(),
 
                 // Provider IDs from mapping
                 AniDbId = mapping.anidb_id?.ToString(),
@@ -418,7 +525,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 AniSearchId = mapping.anisearch_id?.ToString(),
                 KitsuId = mapping.kitsu_id?.ToString(),
                 MalId = effectiveMalId?.ToString(),
-                TheMovieDbId = mapping.PreferredTmdbId?.ToString(),
+                TheMovieDbId = mapping.PreferredTmdbId?.ToString() ?? plexMatchData.TmdbId?.ToString(),
                 Type = mapping.type,
                 AnimePlanetId = mapping.animeplanet_id
             };

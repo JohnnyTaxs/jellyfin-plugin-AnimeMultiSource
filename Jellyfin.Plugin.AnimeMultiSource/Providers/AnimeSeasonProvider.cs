@@ -244,6 +244,13 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 return await _apiService.GetRootAniListIdAsync(idFromInfo.Value);
             }
 
+            // 1b) A manual Identify can leave only a MAL/Kitsu/TVDB/IMDb id on the series.
+            var mappedId = await ResolveAniListIdFromOtherProviderIdsAsync(info);
+            if (mappedId.HasValue)
+            {
+                return await _apiService.GetRootAniListIdAsync(mappedId.Value);
+            }
+
             // 2) Try reading parent .plexmatch and mapping via Fribb list
             var seasonPath = info.Path ?? string.Empty;
             var seriesDir = Directory.GetParent(seasonPath)?.FullName;
@@ -277,6 +284,23 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                     mapping = _animeListMapper.GetMappingByImdbId(plexData.ImdbId);
                 }
 
+                if (mapping == null && plexData.TmdbId.HasValue)
+                {
+                    mapping = _animeListMapper.GetMappingByTmdbId(plexData.TmdbId.Value);
+                }
+
+                if (mapping == null && plexData.AniListId.HasValue)
+                {
+                    mapping = _animeListMapper.GetMappingByAniListId(plexData.AniListId.Value)
+                        ?? new AnimeMapping { anilist_id = plexData.AniListId.Value };
+                }
+
+                if (mapping == null && plexData.MalId.HasValue)
+                {
+                    mapping = _animeListMapper.GetMappingByMalId(plexData.MalId.Value)
+                        ?? new AnimeMapping { mal_id = plexData.MalId.Value };
+                }
+
                 if (mapping?.anilist_id.HasValue == true)
                 {
                     _logger.LogInformation("Resolved AniList ID {AniListId} for series '{Title}' via .plexmatch", mapping.anilist_id, plexData.Title);
@@ -289,6 +313,71 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             }
 
             return null;
+        }
+
+        private async Task<int?> ResolveAniListIdFromOtherProviderIdsAsync(SeasonInfo info)
+        {
+            await _animeListMapper.LoadAnimeListsAsync();
+
+            if (TryGetProviderId(info, Constants.MalProviderId, out var malValue) &&
+                long.TryParse(malValue, out var malId))
+            {
+                return await GetRootFromMappingAsync(_animeListMapper.GetMappingByMalId(malId));
+            }
+
+            if (TryGetProviderId(info, Constants.KitsuProviderId, out var kitsuValue) &&
+                long.TryParse(kitsuValue, out var kitsuId))
+            {
+                return await GetRootFromMappingAsync(_animeListMapper.GetMappingByKitsuId(kitsuId));
+            }
+
+            if (TryGetProviderId(info, MetadataProvider.Tmdb.ToString(), out var tmdbValue) &&
+                long.TryParse(tmdbValue, out var tmdbId))
+            {
+                return await GetRootFromMappingAsync(_animeListMapper.GetMappingByTmdbId(tmdbId));
+            }
+
+            if (TryGetProviderId(info, MetadataProvider.Tvdb.ToString(), out var tvdbValue) &&
+                long.TryParse(tvdbValue, out _))
+            {
+                return await GetRootFromMappingAsync(_animeListMapper.GetMappingByTvdbId(tvdbValue));
+            }
+
+            if (TryGetProviderId(info, MetadataProvider.Imdb.ToString(), out var imdbValue) &&
+                !string.IsNullOrWhiteSpace(imdbValue))
+            {
+                return await GetRootFromMappingAsync(_animeListMapper.GetMappingByImdbId(imdbValue));
+            }
+
+            return null;
+        }
+
+        private async Task<int?> GetRootFromMappingAsync(AnimeMapping? mapping)
+        {
+            if (mapping?.anilist_id.HasValue == true)
+            {
+                return await _apiService.GetRootAniListIdAsync(mapping.anilist_id.Value);
+            }
+
+            return null;
+        }
+
+        private bool TryGetProviderId(SeasonInfo info, string key, out string value)
+        {
+            if (info.SeriesProviderIds != null &&
+                TryGetValueIgnoreCase(info.SeriesProviderIds, key, out value))
+            {
+                return true;
+            }
+
+            if (info.ProviderIds != null &&
+                TryGetValueIgnoreCase(info.ProviderIds, key, out value))
+            {
+                return true;
+            }
+
+            value = string.Empty;
+            return false;
         }
 
         private int? GetAniListIdFromInfo(SeasonInfo info)

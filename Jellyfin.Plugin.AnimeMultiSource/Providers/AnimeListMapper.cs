@@ -19,6 +19,8 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
         private static Dictionary<string, AnimeMapping> _mappingsByImdb = new();
         private static Dictionary<long, AnimeMapping> _mappingsByAniList = new();
         private static Dictionary<long, AnimeMapping> _mappingsByMal = new();
+        private static Dictionary<long, AnimeMapping> _mappingsByKitsu = new();
+        private static Dictionary<long, AnimeMapping> _mappingsByTmdb = new();
         private static DateTime _lastUpdated = DateTime.MinValue;
         private static DateTimeOffset _lastFailure = DateTimeOffset.MinValue;
         private static readonly SemaphoreSlim LoadLock = new(1, 1);
@@ -93,12 +95,31 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                     .ToDictionary(g => g.Key, g => SelectPreferredMapping(g))
                     ?? new Dictionary<long, AnimeMapping>();
 
+                var mappingsByKitsu = mappings?
+                    .Where(x => x.kitsu_id.HasValue)
+                    .GroupBy(x => x.kitsu_id!.Value)
+                    .ToDictionary(g => g.Key, g => SelectPreferredMapping(g))
+                    ?? new Dictionary<long, AnimeMapping>();
+
+                // TMDB TV ids are shared by every season of a show, so only index a TMDB id when
+                // all of its Fribb rows point at the same AniList entry. Ambiguous ids fall back
+                // to TVDB/IMDb rather than silently selecting one season.
+                var mappingsByTmdb = mappings?
+                    .Select(m => (Id: m.PreferredTmdbId, Mapping: m))
+                    .Where(x => x.Id.HasValue)
+                    .GroupBy(x => x.Id!.Value)
+                    .Where(g => g.Select(x => x.Mapping.anilist_id).Where(id => id.HasValue).Distinct().Count() == 1)
+                    .ToDictionary(g => g.Key, g => g.First().Mapping)
+                    ?? new Dictionary<long, AnimeMapping>();
+
                 await BackfillFromOfflineDatabaseAsync(mappingsByAniList);
 
                 _mappingsByTvdb = mappingsByTvdb;
                 _mappingsByImdb = mappingsByImdb;
                 _mappingsByAniList = mappingsByAniList;
                 _mappingsByMal = mappingsByMal;
+                _mappingsByKitsu = mappingsByKitsu;
+                _mappingsByTmdb = mappingsByTmdb;
                 _lastUpdated = DateTime.UtcNow;
                 _lastFailure = DateTimeOffset.MinValue;
 
@@ -207,6 +228,16 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
         public AnimeMapping? GetMappingByMalId(long malId)
         {
             return _mappingsByMal.TryGetValue(malId, out var mapping) ? mapping : null;
+        }
+
+        public AnimeMapping? GetMappingByKitsuId(long kitsuId)
+        {
+            return _mappingsByKitsu.TryGetValue(kitsuId, out var mapping) ? mapping : null;
+        }
+
+        public AnimeMapping? GetMappingByTmdbId(long tmdbId)
+        {
+            return _mappingsByTmdb.TryGetValue(tmdbId, out var mapping) ? mapping : null;
         }
 
         private AnimeMapping SelectPreferredMapping(IEnumerable<AnimeMapping> group)

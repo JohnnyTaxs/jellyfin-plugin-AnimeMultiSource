@@ -159,7 +159,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             var url = $"https://api.jikan.moe/v4/anime/{malId.Value}/episodes/{numbers.Episode.Value}";
             try
             {
-                await ApiService.EnforceJikanRateLimitAsync();
+                await ApiService.EnforceJikanRateLimitAsync(cancellationToken);
                 using var response = await GetWithTimeoutAsync(_jikanClient, url, cancellationToken);
                 if (!response.IsSuccessStatusCode)
                 {
