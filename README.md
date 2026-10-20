@@ -2,19 +2,19 @@
 
 Remote anime metadata, tags, artwork and people for Jellyfin using multiple sources (AniList, AniDB, Jikan/MAL, TVDB, Fanart.tv, Fribb mappings and .plexmatch files). Built for large libraries with cautious rate limiting and persistent caching.
 
-## Fork status
-This repository is **JohnnyTaxs' fork** of [webbster64/jellyfin-plugin-AnimeMultiSource](https://github.com/webbster64/jellyfin-plugin-AnimeMultiSource), maintained for Jellyfin 12 / net10.0. It tracks upstream provider behavior where practical and keeps the fork's additional metadata, matching, artwork, and reliability work.
+## About this fork
+I'm JohnnyTaxs. This is my fork of [webbster64/jellyfin-plugin-AnimeMultiSource](https://github.com/webbster64/jellyfin-plugin-AnimeMultiSource), maintained for Jellyfin 12 / net10.0. I don't maintain the upstream `jellyfin-10.11` branch. I keep upstream's core provider behavior where it makes sense; the list below covers only what differs from the original project's README and behavior, not the features we share.
 
-Fork additions and retained behavior include:
-- Jellyfin 12 / net10.0 packaging with a tag-driven release workflow and plugin catalog manifest.
-- Episode stills fallback chain **TVDB → Jikan/MAL → Kitsu → TMDB**, including a standalone Jikan episode-image provider and support for either a TMDB v3 API key or a v4 Read Access Token.
-- Manual **Identify** support for series without a `.plexmatch`, plus explicit `.plexmatch` precedence for AniList, MAL, and TMDB ids.
-- `.plexmatch` and Fribb-backed ID resolution with manual-search fallbacks through Jikan/MAL and Kitsu.
-- AnimeSchedule.net **Upcoming episodes**, scheduled refreshes, and per-series gating so refreshes cannot overlap.
-- Season handling fixes for localized season folders, season-specific MAL/Kitsu ids, specials, and post-season-1 stills.
-- Excluded folders, independent display/original-title fields, and cache bounds suitable for large libraries.
-- Hardened networking: AniList/AniDB/Jikan rate limiting and backoff, retry-after clamping, bounded season walks, image-host allowlists, cancellation propagation, and bounded persistent caches.
-- Release validation that checks all version fields, ABI/framework compatibility, package contents, checksums, and immutable tags.
+### Differences from upstream
+- **Episode stills and TMDB**: episode artwork falls back from TVDB to Jikan/MAL, Kitsu, and TMDB, with a standalone Jikan episode-image provider. TMDB accepts either a v3 API key or a v4 Read Access Token (`eyJ...`, sent as a Bearer header), and `.plexmatch` accepts `tmdbid`.
+- **Manual Identify**: a series can be identified without a `.plexmatch` when Jellyfin stores the selected provider ID. When a `.plexmatch` is present, explicit `anilistid`/`malid`/`tmdbid` hints take precedence over conflicting hints.
+- **Manual search fallbacks**: when AniList search has no result, fall back to Jikan/MAL and Kitsu.
+- **Season-specific resolution**: season metadata and episode stills use the selected season's own MAL/Kitsu IDs rather than the season-1 root, including specials and later seasons.
+- **Cache behavior**: AniList/AniDB entries live for 30 days instead of 5. AniList media/season/root caches are capped at 5,000 entries each, people at 20,000, and AniDB at 5,000; the same caps apply when restoring the disk cache.
+- **Resilience**: Jikan gets a 15-second request timeout and a 10-minute pause after repeated failures; AniDB requests are serialized; season walks are bounded; retry-after values are clamped; image hosts are allowlisted; and cancellation flows through AniDB/AniList calls.
+- **Safer Fribb loading**: mappings are parsed one record at a time, and a truncated download is rejected instead of replacing a good mapping set.
+- **AnimeSchedule refresh gating**: the post-refresh queue and scheduled task cannot process the same series at the same time.
+- **Release checks**: tag/version/ABI/framework consistency, package contents, checksums, and immutable tags are validated before publishing.
 
 ## Features
 - Multi-source IDs: resolves AniList, AniDB, MAL, TVDB, TMDB, IMDb, Kitsu, AniSearch via Fribb mappings + optional `.plexmatch` overrides. Backfills gaps in Fribb's data from `manami-project/anime-offline-database` and (optionally) AnimeSchedule.net, for titles Fribb hasn't fully cross-referenced yet.
