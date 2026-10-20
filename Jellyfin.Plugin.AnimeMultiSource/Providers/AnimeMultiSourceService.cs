@@ -183,9 +183,26 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             // Ensure anime lists are loaded
             await _animeListMapper.LoadAnimeListsAsync();
 
-            // Find mapping
+            // Find mapping. Explicit AniList/MAL ids are user overrides and must win over the
+            // TVDB/IMDb ids Sonarr writes automatically.
             AnimeMapping? mapping = null;
-            if (!string.IsNullOrEmpty(plexMatchData.TvdbId))
+            if (plexMatchData.AniListId.HasValue)
+            {
+                mapping = _animeListMapper.GetMappingByAniListId(plexMatchData.AniListId.Value)
+                    ?? new AnimeMapping { anilist_id = plexMatchData.AniListId.Value };
+                _logger.LogInformation("Resolved series '{Title}' via .plexmatch anilistid {AniListId}",
+                    plexMatchData.Title, plexMatchData.AniListId);
+            }
+
+            if (mapping == null && plexMatchData.MalId.HasValue)
+            {
+                mapping = _animeListMapper.GetMappingByMalId(plexMatchData.MalId.Value)
+                    ?? new AnimeMapping { mal_id = plexMatchData.MalId.Value };
+                _logger.LogInformation("Resolved series '{Title}' via .plexmatch malid {MalId}",
+                    plexMatchData.Title, plexMatchData.MalId);
+            }
+
+            if (mapping == null && !string.IsNullOrEmpty(plexMatchData.TvdbId))
             {
                 mapping = _manualMappings.FirstOrDefault(m => m.TvdbId.HasValue && m.TvdbId.Value.ToString() == plexMatchData.TvdbId)
                     ?? _animeListMapper.GetMappingByTvdbId(plexMatchData.TvdbId);
@@ -204,24 +221,6 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 mapping = _animeListMapper.GetMappingByTmdbId(plexMatchData.TmdbId.Value);
             }
 
-            // Direct AniList/MAL anchor: lets .plexmatch identify titles Fribb hasn't
-            // cross-referenced to a TVDB/IMDb id yet (e.g. brand-new simulcasts).
-            if (mapping == null && plexMatchData.AniListId.HasValue)
-            {
-                mapping = _animeListMapper.GetMappingByAniListId(plexMatchData.AniListId.Value)
-                    ?? new AnimeMapping { anilist_id = plexMatchData.AniListId.Value };
-                _logger.LogInformation("Resolved series '{Title}' via .plexmatch anilistid {AniListId} (no TVDB/IMDb id needed)",
-                    plexMatchData.Title, plexMatchData.AniListId);
-            }
-
-            if (mapping == null && plexMatchData.MalId.HasValue)
-            {
-                mapping = _animeListMapper.GetMappingByMalId(plexMatchData.MalId.Value)
-                    ?? new AnimeMapping { mal_id = plexMatchData.MalId.Value };
-                _logger.LogInformation("Resolved series '{Title}' via .plexmatch malid {MalId} (no TVDB/IMDb id needed)",
-                    plexMatchData.Title, plexMatchData.MalId);
-            }
-
             if (mapping == null)
             {
                 mapping = ResolveMappingFromProviderIds(info);
@@ -235,6 +234,17 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             {
                 _logger.LogWarning("No mapping found for series '{Title}'", plexMatchData.Title);
                 return null;
+            }
+
+            // Some Fribb rows (and malid-only .plexmatch files) have a MAL id but no AniList id.
+            // Resolve it so seasons and AniList-backed metadata still work.
+            if (!mapping.anilist_id.HasValue && mapping.mal_id.HasValue)
+            {
+                var mappedAniListId = await _apiService.GetAniListIdByMalIdAsync(mapping.mal_id.Value);
+                if (mappedAniListId.HasValue)
+                {
+                    mapping.anilist_id = mappedAniListId.Value;
+                }
             }
 
             // Fribb sometimes has an anidb_id but hasn't cross-referenced anilist_id/mal_id yet for

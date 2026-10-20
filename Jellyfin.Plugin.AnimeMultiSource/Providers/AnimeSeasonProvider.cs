@@ -124,14 +124,18 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
             var seasonName = GetSeasonName(seasonDetail, seasonNumber, info.Name);
             var sortName = $"Season {seasonNumber:00}";
-            var originalTitle = seasonDetail.TitleEnglish
-                ?? seasonDetail.TitleRomaji
-                ?? seasonDetail.TitleNative
-                ?? seasonName;
+            var originalTitle = seasonNumber == 0
+                ? seasonName
+                : seasonDetail.TitleEnglish
+                    ?? seasonDetail.TitleRomaji
+                    ?? seasonDetail.TitleNative
+                    ?? seasonName;
 
             string? overview = null;
             int? malIdForOverview = seasonDetail.MalId;
-            if (ShouldUseJikanOverview() && !malIdForOverview.HasValue)
+            // The series MAL id belongs to season 1. Using it for S2+/specials displays the
+            // wrong synopsis whenever the season's AniList entry has no idMal.
+            if (ShouldUseJikanOverview() && !malIdForOverview.HasValue && seasonNumber == 1)
             {
                 malIdForOverview = await ResolveSeriesMalIdAsync(info);
             }
@@ -147,6 +151,13 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 overview = seasonDetail.Description;
             }
 
+            // Season 0 is one folder for unrelated OVAs/specials; one entry's metadata must not
+            // describe the whole season.
+            if (seasonNumber == 0)
+            {
+                overview = null;
+            }
+
             var season = new Season
             {
                 Name = seasonName,
@@ -157,33 +168,33 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 IndexNumber = seasonNumber
             };
 
-            if (seasonDetail.StartDate.HasValue)
-            {
-                season.PremiereDate = seasonDetail.StartDate.Value;
-                season.ProductionYear = seasonDetail.StartDate.Value.Year;
-            }
-
-            if (seasonDetail.EndDate.HasValue)
-            {
-                // Season does not expose a dedicated end date field in some Jellyfin versions; ignore if not supported.
-            }
-
-            if (seasonDetail.AverageScore.HasValue)
-            {
-                season.CommunityRating = (float)(seasonDetail.AverageScore.Value / 10.0);
-            }
-
-            if (seasonDetail.Genres?.Count > 0)
-            {
-                var genres = seasonDetail.Genres;
-                season.Genres = genres.ToArray();
-            }
-
             season.ProviderIds ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            season.SetProviderId(Constants.AniListProviderId, seasonDetail.AniListId.ToString());
-            if (seasonDetail.MalId.HasValue)
+            if (seasonNumber != 0)
             {
-                season.SetProviderId(Constants.MalProviderId, seasonDetail.MalId.Value.ToString());
+                if (seasonDetail.StartDate.HasValue)
+                {
+                    season.PremiereDate = seasonDetail.StartDate.Value;
+                    season.ProductionYear = seasonDetail.StartDate.Value.Year;
+                }
+
+                if (seasonDetail.AverageScore.HasValue)
+                {
+                    season.CommunityRating = (float)(seasonDetail.AverageScore.Value / 10.0);
+                }
+
+                if (seasonDetail.Genres?.Count > 0)
+                {
+                    var genres = seasonDetail.Genres;
+                    season.Genres = genres.ToArray();
+                }
+
+                // A season-0 AniList entry describes only one special; never apply its ids to
+                // the whole Specials season.
+                season.SetProviderId(Constants.AniListProviderId, seasonDetail.AniListId.ToString());
+                if (seasonDetail.MalId.HasValue)
+                {
+                    season.SetProviderId(Constants.MalProviderId, seasonDetail.MalId.Value.ToString());
+                }
             }
 
             // Season-level tags from AniDB via mapping
@@ -274,7 +285,19 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
                 await _animeListMapper.LoadAnimeListsAsync();
                 AnimeMapping? mapping = null;
-                if (!string.IsNullOrEmpty(plexData.TvdbId))
+                if (plexData.AniListId.HasValue)
+                {
+                    mapping = _animeListMapper.GetMappingByAniListId(plexData.AniListId.Value)
+                        ?? new AnimeMapping { anilist_id = plexData.AniListId.Value };
+                }
+
+                if (mapping == null && plexData.MalId.HasValue)
+                {
+                    mapping = _animeListMapper.GetMappingByMalId(plexData.MalId.Value)
+                        ?? new AnimeMapping { mal_id = plexData.MalId.Value };
+                }
+
+                if (mapping == null && !string.IsNullOrEmpty(plexData.TvdbId))
                 {
                     mapping = _animeListMapper.GetMappingByTvdbId(plexData.TvdbId);
                 }
@@ -289,22 +312,11 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                     mapping = _animeListMapper.GetMappingByTmdbId(plexData.TmdbId.Value);
                 }
 
-                if (mapping == null && plexData.AniListId.HasValue)
+                var rootId = await GetRootFromMappingAsync(mapping);
+                if (rootId.HasValue)
                 {
-                    mapping = _animeListMapper.GetMappingByAniListId(plexData.AniListId.Value)
-                        ?? new AnimeMapping { anilist_id = plexData.AniListId.Value };
-                }
-
-                if (mapping == null && plexData.MalId.HasValue)
-                {
-                    mapping = _animeListMapper.GetMappingByMalId(plexData.MalId.Value)
-                        ?? new AnimeMapping { mal_id = plexData.MalId.Value };
-                }
-
-                if (mapping?.anilist_id.HasValue == true)
-                {
-                    _logger.LogInformation("Resolved AniList ID {AniListId} for series '{Title}' via .plexmatch", mapping.anilist_id, plexData.Title);
-                    return await _apiService.GetRootAniListIdAsync(mapping.anilist_id.Value);
+                    _logger.LogInformation("Resolved AniList ID {AniListId} for series '{Title}' via .plexmatch", rootId, plexData.Title);
+                    return rootId;
                 }
             }
             catch (Exception ex)
@@ -354,12 +366,20 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
         private async Task<int?> GetRootFromMappingAsync(AnimeMapping? mapping)
         {
-            if (mapping?.anilist_id.HasValue == true)
+            if (mapping == null)
             {
-                return await _apiService.GetRootAniListIdAsync(mapping.anilist_id.Value);
+                return null;
             }
 
-            return null;
+            var aniListId = mapping.anilist_id;
+            if (!aniListId.HasValue && mapping.mal_id.HasValue)
+            {
+                aniListId = await _apiService.GetAniListIdByMalIdAsync(mapping.mal_id.Value);
+            }
+
+            return aniListId.HasValue
+                ? await _apiService.GetRootAniListIdAsync(aniListId.Value)
+                : null;
         }
 
         private bool TryGetProviderId(SeasonInfo info, string key, out string value)
@@ -433,9 +453,14 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
         private string GetSeasonName(ApiService.AniListSeasonDetail seasonDetail, int seasonNumber, string fallbackName)
         {
+            if (seasonNumber <= 0)
+            {
+                return "Specials";
+            }
+
             if (_config.SeasonTitleFormat == SeasonTitleFormatType.Numbered)
             {
-                return seasonNumber <= 0 ? "Specials" : GetLocalizedSeasonNumberName(seasonNumber);
+                return GetLocalizedSeasonNumberName(seasonNumber);
             }
 
             return seasonDetail.TitleEnglish

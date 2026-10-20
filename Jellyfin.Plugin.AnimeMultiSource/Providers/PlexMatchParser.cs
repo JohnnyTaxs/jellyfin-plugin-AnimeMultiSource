@@ -31,8 +31,12 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 switch (key.ToLowerInvariant())
                 {
                     case "title":
+                    case "show":
                         data.Title = value;
                         _logger?.LogDebug("Parsed Title: {Title}", value);
+                        break;
+                    case "guid":
+                        ApplyGuid(data, value);
                         break;
                     case "year":
                         if (int.TryParse(value, out int year))
@@ -75,6 +79,55 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             }
 
             return data;
+        }
+
+        // Plex documents guid hints such as tvdb://12345 and the older
+        // com.plexapp.agents.thetvdb://12345 form.
+        private static void ApplyGuid(PlexMatchData data, string guid)
+        {
+            var separator = guid.IndexOf("://", StringComparison.Ordinal);
+            if (separator <= 0)
+            {
+                return;
+            }
+
+            var source = guid[..separator].ToLowerInvariant();
+            var id = guid[(separator + 3)..];
+            var suffix = id.IndexOfAny(new[] { '?', '#' });
+            if (suffix >= 0)
+            {
+                id = id[..suffix];
+            }
+
+            id = id.Trim('/');
+            if (string.IsNullOrWhiteSpace(id))
+            {
+                return;
+            }
+
+            if (source.Contains("anilist", StringComparison.Ordinal))
+            {
+                if (long.TryParse(id, out var aniListId)) data.AniListId = aniListId;
+            }
+            else if (source.Contains("myanimelist", StringComparison.Ordinal) ||
+                     source.EndsWith("mal", StringComparison.Ordinal))
+            {
+                if (long.TryParse(id, out var malId)) data.MalId = malId;
+            }
+            else if (source.Contains("themoviedb", StringComparison.Ordinal) ||
+                     source.EndsWith("tmdb", StringComparison.Ordinal))
+            {
+                if (long.TryParse(id, out var tmdbId)) data.TmdbId = tmdbId;
+            }
+            else if (source.Contains("thetvdb", StringComparison.Ordinal) ||
+                     source.EndsWith("tvdb", StringComparison.Ordinal))
+            {
+                data.TvdbId = id;
+            }
+            else if (source.Contains("imdb", StringComparison.Ordinal))
+            {
+                data.ImdbId = id;
+            }
         }
     }
 

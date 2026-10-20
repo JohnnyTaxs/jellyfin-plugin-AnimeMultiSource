@@ -253,8 +253,9 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 }
             }
 
-            // Specials (season 0) are not episodes of the series root; do not fall back to it.
-            if (episode.ParentIndexNumber == 0)
+            // Specials and later seasons are not episodes of the series root. Without a
+            // season-level id, episode 1 of the root would be the wrong still.
+            if (episode.ParentIndexNumber is 0 or > 1)
             {
                 return null;
             }

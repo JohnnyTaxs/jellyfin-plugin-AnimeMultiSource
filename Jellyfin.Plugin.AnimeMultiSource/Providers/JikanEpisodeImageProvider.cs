@@ -155,7 +155,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 return parsedSeasonMalId;
             }
 
-            if (episode.ParentIndexNumber == 0)
+            if (episode.ParentIndexNumber is 0 or > 1)
             {
                 return null;
             }

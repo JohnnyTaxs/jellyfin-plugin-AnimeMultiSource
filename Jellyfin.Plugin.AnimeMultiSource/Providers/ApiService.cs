@@ -212,6 +212,52 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             return null;
         }
 
+        public async Task<int?> GetAniListIdByMalIdAsync(long malId)
+        {
+            if (malId <= 0 || malId > int.MaxValue)
+            {
+                return null;
+            }
+
+            try
+            {
+                const string query = @"
+                    query ($idMal: Int) {
+                        Media(idMal: $idMal, type: ANIME) {
+                            id
+                        }
+                    }";
+
+                var request = new
+                {
+                    query,
+                    variables = new { idMal = (int)malId }
+                };
+
+                using var content = new StringContent(
+                    JsonSerializer.Serialize(request),
+                    System.Text.Encoding.UTF8,
+                    "application/json");
+                await EnforceAniListRateLimitAsync();
+                using var timeout = new CancellationTokenSource(ExternalRequestTimeout);
+                using var response = await _httpClient.PostAsync("https://graphql.anilist.co", content, timeout.Token);
+                if (!response.IsSuccessStatusCode)
+                {
+                    _logger.LogDebug("AniList idMal lookup returned status code: {StatusCode}", response.StatusCode);
+                    return null;
+                }
+
+                var json = await response.Content.ReadAsStringAsync(timeout.Token);
+                var media = JsonSerializer.Deserialize<AniListResponse>(json)?.Data?.Media;
+                return media?.Id > 0 ? media.Id : null;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Failed to resolve MAL ID {MalId} to AniList", malId);
+                return null;
+            }
+        }
+
         public async Task<List<AniListMedia>> SearchAniListAnimeAsync(string query, CancellationToken cancellationToken)
         {
             if (string.IsNullOrWhiteSpace(query))

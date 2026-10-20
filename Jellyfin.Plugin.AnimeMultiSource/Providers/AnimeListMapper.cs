@@ -101,15 +101,14 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                     .ToDictionary(g => g.Key, g => SelectPreferredMapping(g))
                     ?? new Dictionary<long, AnimeMapping>();
 
-                // TMDB TV ids are shared by every season of a show, so only index a TMDB id when
-                // all of its Fribb rows point at the same AniList entry. Ambiguous ids fall back
-                // to TVDB/IMDb rather than silently selecting one season.
+                // TMDB TV ids are shared by every season of a show. Pick the preferred TV row
+                // deterministically (lowest AniList id) as the root; the season provider walks
+                // the sequel chain from there.
                 var mappingsByTmdb = mappings?
                     .Select(m => (Id: m.PreferredTmdbId, Mapping: m))
                     .Where(x => x.Id.HasValue)
                     .GroupBy(x => x.Id!.Value)
-                    .Where(g => g.Select(x => x.Mapping.anilist_id).Where(id => id.HasValue).Distinct().Count() == 1)
-                    .ToDictionary(g => g.Key, g => g.First().Mapping)
+                    .ToDictionary(g => g.Key, g => SelectPreferredMapping(g.Select(x => x.Mapping)))
                     ?? new Dictionary<long, AnimeMapping>();
 
                 await BackfillFromOfflineDatabaseAsync(mappingsByAniList);
