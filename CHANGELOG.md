@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.1.0.3 - 2026-10-20
+- Fixed episode stills for seasons after the first: season-specific MAL/Kitsu IDs are resolved instead of the season 1 root ID, and TVDB episode-image failures now fall through to Jikan/MAL, Kitsu, and TMDB.
+- Manual Identify now works for series without a `.plexmatch`: selected AniList, MAL, Kitsu, or TMDB IDs resolve to the matching series and season metadata.
+- Explicit `anilistid`/`malid` hints in `.plexmatch` now override conflicting TVDB/IMDb/TMDB hints.
+- Specials no longer inherit one OVA's season IDs, name, or overview; season overview/image fallbacks are limited to the seasons they actually describe.
+- Configuration fixes: unsupported title data sources are removed, the default backdrop aspect ratio accepts exact 16:9 images, clearing the AniDB rate limit no longer fails the save, and Fanart key/language changes apply without a restart.
+- Exclusion handling now works for case-insensitive macOS paths and for virtual seasons matched by any provider ID.
+- External API hardening: bounded season walks and AniDB request serialization, TVDB continuation-host validation, image-host allowlists, Jikan 429 handling, retry-after clamping, and incomplete TVDB lists are no longer cached.
+- Provider ordering is explicit so anime providers run before Jellyfin's core providers; AnimeSchedule updates no longer block the refresh pipeline.
+- Release engineering: validates all version fields plus GUID/ABI/framework consistency, generates `meta.json`, uses CHANGELOG notes, rejects re-tagging an existing release, and validates the manifest before publishing it.
+
 ## 1.1.0.2 - 2026-10-20
 - Fixed remote-search artwork: the AniList covers in Jellyfin's Identify dialog could fail to load because the metadata providers threw `NotImplementedException` from `GetImageResponse`. They now proxy the image with a 30-second timeout.
 - Dispose HTTP responses and request content in the AniList, AniDB, and TVDB clients and in the Jikan episode lookup, avoiding socket/handle leaks during long scans and image refreshes.

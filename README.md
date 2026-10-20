@@ -94,9 +94,9 @@ A newly-aired anime's AniDB/MAL tags and genres are often thin at first - commun
 
 ## Releases
 Releases are tag-driven. To publish one:
-1. Set the version in `Directory.Build.props`, `build.yaml`, and `Jellyfin.Plugin.AnimeMultiSource/plugin.json` (they must match).
+1. Set `Version`, `AssemblyVersion`, and `FileVersion` in `Directory.Build.props`, plus the version in `build.yaml` and `Jellyfin.Plugin.AnimeMultiSource/plugin.json` (they must all match).
 2. Add the release notes to `CHANGELOG.md`.
-3. Commit, then push a tag such as `v1.1.0.1`.
+3. Commit, then push an annotated tag such as `v1.1.0.3`.
 
 The **Release** workflow builds and validates the package, creates the GitHub release, and prepends the new version to `manifest.json` on `main` while keeping older versions. No manual manifest edits or checksums are needed. See [RELEASING.md](RELEASING.md) for the full checklist.
 
