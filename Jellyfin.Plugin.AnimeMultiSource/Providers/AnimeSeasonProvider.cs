@@ -232,7 +232,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
         public Task<HttpResponseMessage> GetImageResponse(string url, CancellationToken cancellationToken)
         {
-            throw new NotImplementedException();
+            return ImageHttpClient.Instance.GetAsync(url, cancellationToken);
         }
 
         private async Task<int?> ResolveRootAniListIdAsync(SeasonInfo info)

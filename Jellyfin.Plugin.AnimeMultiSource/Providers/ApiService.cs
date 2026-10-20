@@ -184,10 +184,10 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 var request = new { query, variables };
 
                 var jsonRequest = JsonSerializer.Serialize(request);
-                var content = new StringContent(jsonRequest, System.Text.Encoding.UTF8, "application/json");
+                using var content = new StringContent(jsonRequest, System.Text.Encoding.UTF8, "application/json");
 
                 await EnforceAniListRateLimitAsync();
-                var response = await _httpClient.PostAsync("https://graphql.anilist.co", content);
+                using var response = await _httpClient.PostAsync("https://graphql.anilist.co", content);
                 if (response.IsSuccessStatusCode)
                 {
                     var json = await response.Content.ReadAsStringAsync();
@@ -446,10 +446,10 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             var variables = new { id = aniListId };
             var request = new { query, variables };
             var jsonRequest = JsonSerializer.Serialize(request);
-            var content = new StringContent(jsonRequest, System.Text.Encoding.UTF8, "application/json");
+            using var content = new StringContent(jsonRequest, System.Text.Encoding.UTF8, "application/json");
 
             await EnforceAniListRateLimitAsync();
-            var response = await _httpClient.PostAsync("https://graphql.anilist.co", content);
+            using var response = await _httpClient.PostAsync("https://graphql.anilist.co", content);
             if (!response.IsSuccessStatusCode)
             {
                 _logger.LogWarning("AniList season fetch failed for {AniListId} with status {Status}", aniListId, response.StatusCode);
@@ -928,10 +928,10 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 var request = new { query, variables };
 
                 var jsonRequest = JsonSerializer.Serialize(request);
-                var content = new StringContent(jsonRequest, System.Text.Encoding.UTF8, "application/json");
+                using var content = new StringContent(jsonRequest, System.Text.Encoding.UTF8, "application/json");
 
                 await EnforceAniListRateLimitAsync();
-                var response = await _httpClient.PostAsync("https://graphql.anilist.co", content);
+                using var response = await _httpClient.PostAsync("https://graphql.anilist.co", content);
                 if (response.IsSuccessStatusCode)
                 {
                     var json = await response.Content.ReadAsStringAsync();
@@ -1164,7 +1164,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
                 _logger.LogDebug("Fetching AniDB tags from: {Url}", url);
 
-                var response = await _httpClient.GetAsync(url);
+                using var response = await _httpClient.GetAsync(url);
                 _lastAniDbRequest = DateTime.UtcNow;
 
                 if (IsAniDbRateLimited(response))
@@ -1296,7 +1296,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 // Test with a known working anime (Natsume's Book of Friends - AniDB ID 5787)
                 var testUrl = $"http://api.anidb.net:9001/httpapi?request=anime&client={clientName}&clientver={clientVersion}&protover=1&aid=5787";
 
-                var response = await _httpClient.GetAsync(testUrl);
+                using var response = await _httpClient.GetAsync(testUrl);
                 if (response.IsSuccessStatusCode)
                 {
                     byte[] responseData = await response.Content.ReadAsByteArrayAsync();

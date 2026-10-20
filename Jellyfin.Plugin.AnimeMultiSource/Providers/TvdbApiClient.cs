@@ -215,6 +215,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                     return response;
                 }
 
+                response.Dispose();
                 request = new HttpRequestMessage(HttpMethod.Get, url);
                 request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
                 response = await _httpClient.SendAsync(request, cancellationToken);
@@ -245,9 +246,9 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 }
 
                 var payload = JsonSerializer.Serialize(new { apikey = _projectApiKey });
-                var content = new StringContent(payload, Encoding.UTF8, "application/json");
+                using var content = new StringContent(payload, Encoding.UTF8, "application/json");
 
-                var response = await _httpClient.PostAsync($"{BaseUrl}/login", content, cancellationToken);
+                using var response = await _httpClient.PostAsync($"{BaseUrl}/login", content, cancellationToken);
                 if (!response.IsSuccessStatusCode)
                 {
                     _logger.LogWarning("TVDB login failed with status {Status}", response.StatusCode);
