@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.1.0.1 - 2026-10-20
+- Merged upstream v1.1.0.0 (webbster64): Jikan outage handling, Fribb TMDb movie-id parsing, runtime parsing, folder exclusions, and the English original-title option. Thanks to @doogalbeez, @Soitora, and @CommanderBubble for the upstream work.
+- Jikan requests now time out after 15 seconds; after 3 failures in a row Jikan is skipped for 10 minutes and AniList data is used instead. Manual search and episode-still lookups share the same timeout, rate limit, and pause state.
+- Fribb mappings that store TMDb movie ids as arrays (for example `{"movie": [372058]}`) no longer crash metadata lookup.
+- Jikan runtimes such as `1 hr 46 min` are read as 106 minutes instead of 46.
+- New **Excluded folders** setting: skips metadata, artwork, upcoming episodes, and automatic tag refreshes for the listed folders, including virtual seasons.
+- New **English** option for the Original Title field.
+- Kept the standalone Jikan episode-image provider and brought it under the same Jikan timeout, rate limit, pause state, and folder exclusions as the TVDB fallback chain.
+- Fixed swapped labels in the Title Field dropdown.
+- Kept the fork's multi-provider episode stills (`TVDB -> Jikan/MAL -> Kitsu -> TMDB`), manual search fallbacks, TMDB API key, and `.plexmatch` `tmdbid` support.
+- Release engineering: version is defined once, packages are validated to exclude Jellyfin server assemblies, and the catalog manifest now keeps older versions instead of replacing them.
+
 ## 1.0.7.6 - 2026-09-14
 - Resolve episode IDs and season/episode numbers from the episode path and series `.plexmatch` when Jellyfin does not attach provider IDs during image refresh.
 

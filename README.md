@@ -5,14 +5,16 @@ Remote anime metadata, tags, artwork and people for Jellyfin using multiple sour
 ## Features
 - Multi-source IDs: resolves AniList, AniDB, MAL, TVDB, TMDB, IMDb, Kitsu, AniSearch via Fribb mappings + optional `.plexmatch` overrides. Backfills gaps in Fribb's data from `manami-project/anime-offline-database` and (optionally) AnimeSchedule.net, for titles Fribb hasn't fully cross-referenced yet.
 - Metadata: titles, descriptions, genres, studios, scores, relations/seasons, people (voice actors/staff), tags (AniDB).
-- Images: fanart.tv + TVDB backdrops, posters, logos, season art with quality filters and limits.
+- Images: fanart.tv + TVDB backdrops, posters, logos, season art with quality filters and limits. Episode stills fall back from TVDB to Jikan/MAL, Kitsu, and optionally TMDB.
+- Excluded folders: skip metadata, artwork, upcoming episodes, and automatic tag refreshes for folders you do not want the plugin to touch (for example, an edited or re-cut series that does not match upstream databases).
+- Original title: choose the original-language title, English title, romaji, or Japanese title independently of the display title.
 - Upcoming episodes: optional AnimeSchedule.net integration populates Jellyfin's built-in "Upcoming" tab with real sub/dub-aware air dates. See [AnimeSchedule.net (Upcoming episodes)](#animeschedulenet-upcoming-episodes) below.
 - Localized libraries: season folders named in other languages (e.g. French "Saison 1") resolve correctly; numbered season titles and TVDB episode translations follow Jellyfin's configured display language.
-- Rate limits & backoff: AniList (30/min), Jikan (spacing + retry-after), AniDB (soft cap with backoff and ban detection).
+- Rate limits & backoff: AniList (30/min), Jikan (spacing, retry-after, 15 s request timeout, and a 10-minute pause after repeated failures), AniDB (soft cap with backoff and ban detection).
 - Persistent caches: AniDB and AniList responses cached up to 5 days and persisted to disk to survive restarts.
 
 ## Requirements
-- Jellyfin 12.0.0+ (net10.0 plugin, ABI 12.0.0.0)
+- Jellyfin 12.0.0+ (net10.0 plugin, ABI 12.0.0.0, built against the Jellyfin 12.0.0 packages for 12.x compatibility)
 - API keys (all optional but recommended):
   - Fanart.tv personal API key (logos/backdrops)
   - AnimeSchedule.net API key (Upcoming episodes; get one from your AnimeSchedule.net account settings, API tab)
@@ -44,6 +46,7 @@ Remote anime metadata, tags, artwork and people for Jellyfin using multiple sour
 Open **Dashboard -> Plugins -> Anime Multi Source**:
 - Enter Fanart.tv personal key (for logos/backdrops).
 - Optionally enter a TMDB API key to enable episode-still fallback after TVDB, Jikan/MAL, and Kitsu.
+- Choose the **Title Field** (romaji, English, or Japanese) and the **Original Title Field** independently; the original title can also be English.
 - AniDB client name/version are internal identifiers used by the plugin's legacy AniDB HTTP API integration. They default to `mediabrowser` / `1`; there is no separate AniDB client to install or configure.
 - Configure backdrop limits/quality and enable/disable sources as desired.
 - Under **Exclusions**, enter one full server folder path per line (for example, `/data/media/anime/One Pace`; use container paths for Docker). The plugin skips metadata, artwork, upcoming episodes, and automatic tag refreshes for each folder and all its children. Save to apply; remove the path to resume updates. Existing metadata, images, and upcoming entries are kept. Exclusions apply only to this plugin; Jellyfin can still scan the files and run other providers.
@@ -74,7 +77,7 @@ A newly-aired anime's AniDB/MAL tags and genres are often thin at first - commun
 - Persistent cache file: `provider-cache.json` under the plugin data folder (fallback to `AppContext.BaseDirectory/AnimeMultiSourceCache`). Entries older than 5 days are discarded automatically.
 
 ## Usage notes
-- `.plexmatch` files are honored for ID hints (title/year/TVDB/IMDb).
+- `.plexmatch` files are honored for ID hints (title/year/TVDB/IMDb/TMDB/AniList/MAL).
 - If AniDB is temporarily paused, tags will be skipped for that window but metadata will still complete; caching prevents repeat hits after the first successful fetch.
 - Logs include rate-limit waits, cache hits, and any AniDB backoff reasons to help diagnose slowdowns.
 
@@ -85,8 +88,17 @@ A newly-aired anime's AniDB/MAL tags and genres are often thin at first - commun
 
 ## Troubleshooting
 - No tags? Check logs for AniDB backoff messages; waits clear automatically. After a successful tag pull, results are cached/persisted for 5 days.
-- Fanart/TVDB images missing? Verify keys and item has a TVDB ID.
+- Jikan/MAL data missing for a few minutes? Logs will show `skipping Jikan until ...`; this is the automatic 10-minute pause after repeated Jikan failures. AniList data is used meanwhile and Jikan resumes on its own.
+- Fanart/TVDB images missing? Verify keys and item has a TVDB ID. Episode stills also try Jikan/MAL and Kitsu when TVDB has none; add a TMDB key for the final fallback.
 - Slow first scan on huge libraries is expected; subsequent scans benefit from caches.
+
+## Releases
+Releases are tag-driven. To publish one:
+1. Set the version in `Directory.Build.props`, `build.yaml`, and `Jellyfin.Plugin.AnimeMultiSource/plugin.json` (they must match).
+2. Add the release notes to `CHANGELOG.md`.
+3. Commit, then push a tag such as `v1.1.0.1`.
+
+The **Release** workflow builds and validates the package, creates the GitHub release, and prepends the new version to `manifest.json` on `main` while keeping older versions. No manual manifest edits or checksums are needed. See [RELEASING.md](RELEASING.md) for the full checklist.
 
 ## License
 GPLv3 (matches Jellyfin plugin requirements).
