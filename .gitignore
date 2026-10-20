@@ -123,3 +123,6 @@ dist/
 # Local tooling and OS metadata
 .DS_Store
 .opencode/
+# Release build output
+publish/
+manifest-entry.json
