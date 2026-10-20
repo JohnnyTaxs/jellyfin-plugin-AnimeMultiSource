@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.0.2 - 2026-10-20
+- Fixed remote-search artwork: the AniList covers in Jellyfin's Identify dialog could fail to load because the metadata providers threw `NotImplementedException` from `GetImageResponse`. They now proxy the image with a 30-second timeout.
+- Dispose HTTP responses and request content in the AniList, AniDB, and TVDB clients and in the Jikan episode lookup, avoiding socket/handle leaks during long scans and image refreshes.
+- Fribb TMDb mapping now falls through to the `movie` id when the `tv` array is present but empty.
+
 ## 1.1.0.1 - 2026-10-20
 - Merged upstream v1.1.0.0 (webbster64): Jikan outage handling, Fribb TMDb movie-id parsing, runtime parsing, folder exclusions, and the English original-title option. Thanks to @doogalbeez, @Soitora, and @CommanderBubble for the upstream work.
 - Jikan requests now time out after 15 seconds; after 3 failures in a row Jikan is skipped for 10 minutes and AniList data is used instead. Manual search and episode-still lookups share the same timeout, rate limit, and pause state.
