@@ -3,7 +3,7 @@
 Remote anime metadata, tags, artwork and people for Jellyfin using multiple sources (AniList, AniDB, Jikan/MAL, TVDB, Fanart.tv, Fribb mappings and .plexmatch files). Built for large libraries with cautious rate limiting and persistent caching.
 
 ## About this fork
-I'm JohnnyTaxs. This is my fork of [webbster64/jellyfin-plugin-AnimeMultiSource](https://github.com/webbster64/jellyfin-plugin-AnimeMultiSource), maintained for Jellyfin 12 / net10.0. I don't maintain the upstream `jellyfin-10.11` branch. I keep upstream's core provider behavior where it makes sense; the list below covers only what differs from the original project's README and behavior, not the features we share.
+This is a fork of [webbster64/jellyfin-plugin-AnimeMultiSource](https://github.com/webbster64/jellyfin-plugin-AnimeMultiSource), maintained for Jellyfin 12 / net10.0. I don't maintain the upstream `jellyfin-10.11` branch. I keep upstream's core provider behavior where it makes sense; the list below covers only what differs from the original project's README and behavior, not the features we share.
 
 ### Differences from upstream
 - **Episode stills and TMDB**: episode artwork falls back from TVDB to Jikan/MAL, Kitsu, and TMDB, with a standalone Jikan episode-image provider. TMDB accepts either a v3 API key or a v4 Read Access Token (`eyJ...`, sent as a Bearer header), and `.plexmatch` accepts `tmdbid`.
