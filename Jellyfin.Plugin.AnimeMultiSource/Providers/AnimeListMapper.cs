@@ -20,8 +20,11 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
         private static Dictionary<long, AnimeMapping> _mappingsByAniList = new();
         private static Dictionary<long, AnimeMapping> _mappingsByMal = new();
         private static DateTime _lastUpdated = DateTime.MinValue;
+        private static DateTimeOffset _lastFailure = DateTimeOffset.MinValue;
         private static readonly SemaphoreSlim LoadLock = new(1, 1);
         private static readonly TimeSpan CacheDuration = TimeSpan.FromHours(Constants.AnimeListCacheHours);
+        private static readonly TimeSpan FailureBackoff = TimeSpan.FromMinutes(5);
+        private static readonly TimeSpan DownloadTimeout = TimeSpan.FromSeconds(60);
 
         public AnimeListMapper(HttpClient httpClient, ILogger logger)
         {
@@ -32,6 +35,12 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
         public async Task LoadAnimeListsAsync()
         {
             if (DateTime.UtcNow - _lastUpdated < CacheDuration)
+            {
+                return;
+            }
+
+            // A Fribb/GitHub outage must not make every episode retry a large download.
+            if (DateTimeOffset.UtcNow - _lastFailure < FailureBackoff)
             {
                 return;
             }
@@ -52,7 +61,10 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                     PropertyNameCaseInsensitive = true
                 };
 
-                var json = await _httpClient.GetStringAsync(Constants.FribbAnimeListsUrl);
+                using var timeout = new CancellationTokenSource(DownloadTimeout);
+                using var response = await _httpClient.GetAsync(Constants.FribbAnimeListsUrl, timeout.Token);
+                response.EnsureSuccessStatusCode();
+                var json = await response.Content.ReadAsStringAsync(timeout.Token);
                 var mappings = JsonSerializer.Deserialize<List<AnimeMapping>>(json, options);
 
                 // Handle duplicates by taking the first occurrence
@@ -88,13 +100,15 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 _mappingsByAniList = mappingsByAniList;
                 _mappingsByMal = mappingsByMal;
                 _lastUpdated = DateTime.UtcNow;
+                _lastFailure = DateTimeOffset.MinValue;
 
                 _logger.LogInformation("Loaded {Count} anime mappings with {TvdbCount} TVDB entries and {ImdbCount} IMDb entries",
                     mappings?.Count ?? 0, _mappingsByTvdb.Count, _mappingsByImdb.Count);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to load anime lists");
+                _lastFailure = DateTimeOffset.UtcNow;
+                _logger.LogError(ex, "Failed to load anime lists; backing off for {Minutes} minutes", FailureBackoff.TotalMinutes);
                 throw;
             }
             finally
@@ -117,7 +131,10 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                     PropertyNameCaseInsensitive = true
                 };
 
-                var json = await _httpClient.GetStringAsync(Constants.AnimeOfflineDatabaseUrl);
+                using var timeout = new CancellationTokenSource(DownloadTimeout);
+                using var response = await _httpClient.GetAsync(Constants.AnimeOfflineDatabaseUrl, timeout.Token);
+                response.EnsureSuccessStatusCode();
+                var json = await response.Content.ReadAsStringAsync(timeout.Token);
                 var supplemental = JsonSerializer.Deserialize<List<AnimeMapping>>(json, options);
                 if (supplemental == null)
                 {

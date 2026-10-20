@@ -68,6 +68,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 return Array.Empty<RemoteImageInfo>();
             }
 
+            var context = $"episode image MAL {malId.Value} ep {episode.IndexNumber.Value}";
             var url = $"https://api.jikan.moe/v4/anime/{malId.Value}/episodes/{episode.IndexNumber.Value}";
             try
             {
@@ -75,11 +76,21 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 using var response = await GetWithTimeoutAsync(url, cancellationToken);
                 if (!response.IsSuccessStatusCode)
                 {
+                    if ((int)response.StatusCode >= 500)
+                    {
+                        ApiService.RecordJikanResult(false, context, $"HTTP {(int)response.StatusCode}", _logger);
+                    }
+                    else
+                    {
+                        ApiService.RecordJikanResult(true, context, string.Empty, _logger);
+                    }
+
                     _logger.LogDebug("Jikan episode image lookup returned {StatusCode} for MAL {MalId} episode {EpisodeNumber}",
                         response.StatusCode, malId, episode.IndexNumber);
                     return Array.Empty<RemoteImageInfo>();
                 }
 
+                ApiService.RecordJikanResult(true, context, string.Empty, _logger);
                 var json = await response.Content.ReadAsStringAsync(cancellationToken);
                 var data = JsonSerializer.Deserialize<JikanEpisodeResponse>(json)?.Data;
                 var imageUrl = data?.Images?.WebP?.ImageUrl ?? data?.Images?.Jpg?.ImageUrl;
@@ -106,6 +117,11 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             }
             catch (Exception ex)
             {
+                if (ex is TimeoutException or HttpRequestException)
+                {
+                    ApiService.RecordJikanResult(false, context, ex.Message, _logger);
+                }
+
                 _logger.LogWarning(ex, "Jikan episode image lookup failed for MAL {MalId} episode {EpisodeNumber}", malId, episode.IndexNumber);
                 return Array.Empty<RemoteImageInfo>();
             }
@@ -121,7 +137,8 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
-                throw new TimeoutException($"Request to {url} timed out after {RequestTimeout.TotalSeconds:F0} s");
+                var safeUrl = Uri.TryCreate(url, UriKind.Absolute, out var parsed) ? parsed.GetLeftPart(UriPartial.Path) : "external service";
+                throw new TimeoutException($"Request to {safeUrl} timed out after {RequestTimeout.TotalSeconds:F0} s");
             }
         }
 
@@ -132,6 +149,17 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
         private static int? GetMalId(Episode episode)
         {
+            var seasonMalId = episode.Season?.GetProviderId(Constants.MalProviderId);
+            if (int.TryParse(seasonMalId, out var parsedSeasonMalId))
+            {
+                return parsedSeasonMalId;
+            }
+
+            if (episode.ParentIndexNumber == 0)
+            {
+                return null;
+            }
+
             var malId = episode.Series?.GetProviderId(Constants.MalProviderId)
                 ?? episode.GetProviderId(Constants.MalProviderId);
             return int.TryParse(malId, out var parsedMalId) ? parsedMalId : null;

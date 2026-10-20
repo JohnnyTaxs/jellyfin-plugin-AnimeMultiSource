@@ -32,6 +32,8 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             _tvdbClient = new TvdbApiClient(httpClient, logger, Constants.TvdbProjectApiKey);
         }
 
+        private static readonly TimeSpan TvdbRequestTimeout = TimeSpan.FromSeconds(15);
+
         public string Name => $"{Constants.PluginName} TVDB Episodes";
 
         public async Task<MetadataResult<Episode>> GetMetadata(EpisodeInfo info, CancellationToken cancellationToken)
@@ -54,7 +56,23 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 return result;
             }
 
-            var tvdbEpisode = await _tvdbClient.FindEpisodeAsync(tvdbSeriesId, info.ParentIndexNumber.Value, info.IndexNumber.Value, cancellationToken);
+            TvdbEpisode? tvdbEpisode;
+            try
+            {
+                using var tvdbTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                tvdbTimeout.CancelAfter(TvdbRequestTimeout);
+                tvdbEpisode = await _tvdbClient.FindEpisodeAsync(tvdbSeriesId, info.ParentIndexNumber.Value, info.IndexNumber.Value, tvdbTimeout.Token);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "TVDB episode lookup failed for series {SeriesId} S{Season}E{Episode}", tvdbSeriesId, info.ParentIndexNumber, info.IndexNumber);
+                return result;
+            }
+
             if (tvdbEpisode == null)
             {
                 _logger.LogWarning("TVDB episode not found for series {SeriesId} S{Season}E{Episode}", tvdbSeriesId, info.ParentIndexNumber, info.IndexNumber);
@@ -64,10 +82,24 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             // Prefer a translation in the library's configured metadata language; fall back to
             // English, then to TVDB's untranslated base fields.
             var preferredLanguage = MapToTvdbLanguageCode(info.MetadataLanguage);
-            var translation = await _tvdbClient.GetEpisodeTranslationAsync(tvdbEpisode.Id, preferredLanguage, cancellationToken);
-            if (translation == null && !string.Equals(preferredLanguage, "eng", StringComparison.OrdinalIgnoreCase))
+            TvdbTranslation? translation = null;
+            try
             {
-                translation = await _tvdbClient.GetEpisodeTranslationAsync(tvdbEpisode.Id, "eng", cancellationToken);
+                using var translationTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                translationTimeout.CancelAfter(TvdbRequestTimeout);
+                translation = await _tvdbClient.GetEpisodeTranslationAsync(tvdbEpisode.Id, preferredLanguage, translationTimeout.Token);
+                if (translation == null && !string.Equals(preferredLanguage, "eng", StringComparison.OrdinalIgnoreCase))
+                {
+                    translation = await _tvdbClient.GetEpisodeTranslationAsync(tvdbEpisode.Id, "eng", translationTimeout.Token);
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "TVDB translation lookup failed for episode {EpisodeId}; using base fields", tvdbEpisode.Id);
             }
 
             var episode = new Episode

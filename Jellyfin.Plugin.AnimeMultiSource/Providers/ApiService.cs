@@ -1566,7 +1566,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             }
         }
 
-        private void RecordJikanResult(bool success, string context, string reason)
+        internal static void RecordJikanResult(bool success, string context, string reason, ILogger logger)
         {
             lock (JikanHealthLock)
             {
@@ -1579,14 +1579,14 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 _jikanConsecutiveFailures++;
                 if (_jikanConsecutiveFailures < JikanFailuresBeforePause)
                 {
-                    _logger.LogWarning("Jikan (MAL) request for {Context} failed ({Reason}); {Count}/{Max} before pausing Jikan",
+                    logger.LogWarning("Jikan (MAL) request for {Context} failed ({Reason}); {Count}/{Max} before pausing Jikan",
                         context, reason, _jikanConsecutiveFailures, JikanFailuresBeforePause);
                     return;
                 }
 
                 _jikanPausedUntil = DateTimeOffset.UtcNow + JikanPauseDuration;
                 _jikanConsecutiveFailures = 0;
-                _logger.LogWarning("Jikan (MAL) failed {Max} times in a row (last: {Reason}); skipping Jikan until {Until:HH:mm} and using AniList data only",
+                logger.LogWarning("Jikan (MAL) failed {Max} times in a row (last: {Reason}); skipping Jikan until {Until:HH:mm} and using AniList data only",
                     JikanFailuresBeforePause, reason, _jikanPausedUntil.ToLocalTime());
             }
         }
@@ -1615,20 +1615,20 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 }
                 catch (Exception ex) when (ex is TaskCanceledException or HttpRequestException)
                 {
-                    RecordJikanResult(false, context, ex is TaskCanceledException ? $"no response from Jikan within {JikanRequestTimeout.TotalSeconds:F0} s" : ex.Message);
+                    RecordJikanResult(false, context, ex is TaskCanceledException ? $"no response from Jikan within {JikanRequestTimeout.TotalSeconds:F0} s" : ex.Message, _logger);
                     return null;
                 }
 
                 if (response.IsSuccessStatusCode)
                 {
-                    RecordJikanResult(true, context, string.Empty);
+                    RecordJikanResult(true, context, string.Empty, _logger);
                     return response;
                 }
 
                 // 5xx (including 503) means Jikan or MAL behind it is down: waiting won't help.
                 if ((int)response.StatusCode >= 500)
                 {
-                    RecordJikanResult(false, context, $"HTTP {(int)response.StatusCode}");
+                    RecordJikanResult(false, context, $"HTTP {(int)response.StatusCode}", _logger);
                     response.Dispose();
                     return null;
                 }
@@ -1646,7 +1646,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 return response;
             }
 
-            RecordJikanResult(false, context, "still rate limited after retries");
+            RecordJikanResult(false, context, "still rate limited after retries", _logger);
             return null;
         }
 

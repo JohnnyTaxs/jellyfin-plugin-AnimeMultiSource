@@ -83,7 +83,24 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 return await GetFallbackImagesAsync(episode, cancellationToken);
             }
 
-            var tvdbEpisode = await _tvdbClient.GetEpisodeByIdAsync(episodeId, cancellationToken);
+            TvdbEpisode? tvdbEpisode;
+            try
+            {
+                using var tvdbTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                tvdbTimeout.CancelAfter(ExternalRequestTimeout);
+                tvdbEpisode = await _tvdbClient.GetEpisodeByIdAsync(episodeId, tvdbTimeout.Token);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                // A TVDB outage must still fall through to Jikan/Kitsu/TMDB.
+                _logger.LogWarning(ex, "TVDB episode image lookup failed for {Name}; trying Jikan/MAL", episode.Name);
+                return await GetFallbackImagesAsync(episode, cancellationToken);
+            }
+
             var imageUrl = TvdbApiClient.NormalizeImageUrl(tvdbEpisode?.Image);
             if (imageUrl != null)
             {
@@ -138,6 +155,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 return Array.Empty<RemoteImageInfo>();
             }
 
+            var context = $"episode image MAL {malId.Value} ep {numbers.Episode.Value}";
             var url = $"https://api.jikan.moe/v4/anime/{malId.Value}/episodes/{numbers.Episode.Value}";
             try
             {
@@ -145,10 +163,20 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 using var response = await GetWithTimeoutAsync(_jikanClient, url, cancellationToken);
                 if (!response.IsSuccessStatusCode)
                 {
+                    if ((int)response.StatusCode >= 500)
+                    {
+                        ApiService.RecordJikanResult(false, context, $"HTTP {(int)response.StatusCode}", _logger);
+                    }
+                    else
+                    {
+                        ApiService.RecordJikanResult(true, context, string.Empty, _logger);
+                    }
+
                     _logger.LogInformation("Jikan returned {StatusCode} for MAL {MalId} episode {EpisodeNumber}", response.StatusCode, malId, numbers.Episode);
                     return Array.Empty<RemoteImageInfo>();
                 }
 
+                ApiService.RecordJikanResult(true, context, string.Empty, _logger);
                 var json = await response.Content.ReadAsStringAsync(cancellationToken);
                 var data = JsonSerializer.Deserialize<JikanEpisodeResponse>(json)?.Data;
                 var jikanImage = data?.Images?.WebP?.ImageUrl ?? data?.Images?.Jpg?.ImageUrl;
@@ -175,13 +203,62 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             }
             catch (Exception ex)
             {
+                if (ex is TimeoutException or HttpRequestException)
+                {
+                    ApiService.RecordJikanResult(false, context, ex.Message, _logger);
+                }
+
                 _logger.LogWarning(ex, "Jikan image lookup failed for {Name}", episode.Name);
                 return Array.Empty<RemoteImageInfo>();
             }
         }
 
+        private static long? GetSeasonMalId(Episode episode)
+        {
+            var rawMalId = episode.Season?.GetProviderId(Constants.MalProviderId);
+            return long.TryParse(rawMalId, out var malId) ? malId : null;
+        }
+
+        private static long? GetSeasonAniListId(Episode episode)
+        {
+            var rawAniListId = episode.Season?.GetProviderId(Constants.AniListProviderId);
+            return long.TryParse(rawAniListId, out var aniListId) ? aniListId : null;
+        }
+
         private async Task<long?> ResolveMalIdAsync(Episode episode, CancellationToken cancellationToken)
         {
+            // Seasons are separate MAL entries for most modern anime. Prefer the season id the
+            // season provider stored, otherwise S2E1 would resolve to season 1's episode 1.
+            var seasonMalId = GetSeasonMalId(episode);
+            if (seasonMalId.HasValue)
+            {
+                return seasonMalId;
+            }
+
+            var seasonAniListId = GetSeasonAniListId(episode);
+            if (seasonAniListId.HasValue)
+            {
+                try
+                {
+                    await _animeListMapper.LoadAnimeListsAsync();
+                    var seasonMapping = _animeListMapper.GetMappingByAniListId(seasonAniListId.Value);
+                    if (seasonMapping?.mal_id is long mappedMalId && mappedMalId > 0)
+                    {
+                        return mappedMalId;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to resolve MAL ID for season AniList {AniListId}", seasonAniListId);
+                }
+            }
+
+            // Specials (season 0) are not episodes of the series root; do not fall back to it.
+            if (episode.ParentIndexNumber == 0)
+            {
+                return null;
+            }
+
             var rawMalId = episode.Series?.GetProviderId(Constants.MalProviderId)
                 ?? episode.GetProviderId(Constants.MalProviderId);
             if (long.TryParse(rawMalId, out var malId))
@@ -238,7 +315,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
         private async Task<IEnumerable<RemoteImageInfo>> GetKitsuImageAsync(Episode episode, CancellationToken cancellationToken)
         {
-            var kitsuId = await ResolveKitsuIdAsync(episode, cancellationToken);
+            var (kitsuId, seasonSpecific) = await ResolveKitsuIdAsync(episode, cancellationToken);
             var numbers = GetEpisodeNumbers(episode);
             if (string.IsNullOrWhiteSpace(kitsuId) || !numbers.Episode.HasValue)
             {
@@ -248,41 +325,34 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
             try
             {
-                const int pageSize = 20;
-                for (var offset = 0; offset <= 1000; offset += pageSize)
+                // Kitsu supports filtering by the entry-local episode number; scanning the whole
+                // entry page by page was up to 51 requests per episode and never passed offset 1000.
+                var url = $"https://kitsu.io/api/edge/anime/{Uri.EscapeDataString(kitsuId)}/episodes?filter%5Bnumber%5D={numbers.Episode.Value}&page%5Blimit%5D=20";
+                using var response = await GetWithTimeoutAsync(_jikanClient, url, cancellationToken);
+                if (!response.IsSuccessStatusCode)
                 {
-                    var url = $"https://kitsu.io/api/edge/anime/{Uri.EscapeDataString(kitsuId)}/episodes?page%5Blimit%5D={pageSize}&page%5Boffset%5D={offset}";
-                    using var response = await GetWithTimeoutAsync(_jikanClient, url, cancellationToken);
-                    if (!response.IsSuccessStatusCode)
-                    {
-                        _logger.LogInformation("Kitsu returned {StatusCode} for anime {KitsuId} at offset {Offset}", response.StatusCode, kitsuId, offset);
-                        return Array.Empty<RemoteImageInfo>();
-                    }
+                    _logger.LogInformation("Kitsu returned {StatusCode} for anime {KitsuId} episode {EpisodeNumber}", response.StatusCode, kitsuId, numbers.Episode);
+                    return Array.Empty<RemoteImageInfo>();
+                }
 
-                    var json = await response.Content.ReadAsStringAsync(cancellationToken);
-                    var episodes = JsonSerializer.Deserialize<KitsuEpisodeResponse>(json)?.Data;
-                    var kitsuEpisode = episodes?.FirstOrDefault(candidate =>
-                        candidate.Attributes?.Number == numbers.Episode &&
-                        (!numbers.Season.HasValue || candidate.Attributes.SeasonNumber == numbers.Season));
-                    var imageUrl = kitsuEpisode?.Attributes?.Thumbnail?.Original;
-                    if (!string.IsNullOrWhiteSpace(imageUrl))
+                var json = await response.Content.ReadAsStringAsync(cancellationToken);
+                var episodes = JsonSerializer.Deserialize<KitsuEpisodeResponse>(json)?.Data;
+                var kitsuEpisode = episodes?.FirstOrDefault(candidate =>
+                    candidate.Attributes?.Number == numbers.Episode &&
+                    (seasonSpecific || !numbers.Season.HasValue || candidate.Attributes.SeasonNumber == numbers.Season));
+                var imageUrl = kitsuEpisode?.Attributes?.Thumbnail?.Original;
+                if (!string.IsNullOrWhiteSpace(imageUrl))
+                {
+                    _logger.LogInformation("Returning Kitsu episode image for {Name}: {Url}", episode.Name, imageUrl);
+                    return new[]
                     {
-                        _logger.LogInformation("Returning Kitsu episode image for {Name}: {Url}", episode.Name, imageUrl);
-                        return new[]
+                        new RemoteImageInfo
                         {
-                            new RemoteImageInfo
-                            {
-                                ProviderName = Name,
-                                Url = imageUrl,
-                                Type = ImageType.Primary
-                            }
-                        };
-                    }
-
-                    if (episodes == null || episodes.Count < pageSize)
-                    {
-                        break;
-                    }
+                            ProviderName = Name,
+                            Url = imageUrl,
+                            Type = ImageType.Primary
+                        }
+                    };
                 }
 
                 _logger.LogInformation("Kitsu has no image for anime {KitsuId} episode {EpisodeNumber}", kitsuId, numbers.Episode);
@@ -299,25 +369,64 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             }
         }
 
-        private async Task<string?> ResolveKitsuIdAsync(Episode episode, CancellationToken cancellationToken)
+        private async Task<string?> ResolveSeasonKitsuIdAsync(Episode episode, CancellationToken cancellationToken)
         {
+            var direct = episode.Season?.GetProviderId(Constants.KitsuProviderId);
+            if (!string.IsNullOrWhiteSpace(direct))
+            {
+                return direct;
+            }
+
+            var aniListId = GetSeasonAniListId(episode);
+            var malId = GetSeasonMalId(episode);
+            if (!aniListId.HasValue && !malId.HasValue)
+            {
+                return null;
+            }
+
+            try
+            {
+                await _animeListMapper.LoadAnimeListsAsync();
+                var mapping = aniListId.HasValue
+                    ? _animeListMapper.GetMappingByAniListId(aniListId.Value)
+                    : _animeListMapper.GetMappingByMalId(malId!.Value);
+                return mapping?.kitsu_id?.ToString();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to resolve season Kitsu ID for {Name}", episode.Name);
+                return null;
+            }
+        }
+
+        private async Task<(string? Id, bool SeasonSpecific)> ResolveKitsuIdAsync(Episode episode, CancellationToken cancellationToken)
+        {
+            // Kitsu has one entry per season, with episode numbers local to that entry. If the
+            // season maps to the same entry as the series (a long-running single entry), keep the
+            // entry-local season check instead of comparing its absolute numbering to Jellyfin's.
             var providerId = episode.Series?.GetProviderId(Constants.KitsuProviderId)
                 ?? episode.GetProviderId(Constants.KitsuProviderId);
+            var seasonKitsuId = await ResolveSeasonKitsuIdAsync(episode, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(seasonKitsuId))
+            {
+                return (seasonKitsuId, !string.Equals(seasonKitsuId, providerId, StringComparison.Ordinal));
+            }
+
             if (!string.IsNullOrWhiteSpace(providerId))
             {
-                return providerId;
+                return (providerId, false);
             }
 
             var seriesPath = ResolveSeriesPath(episode);
             if (string.IsNullOrWhiteSpace(seriesPath))
             {
-                return null;
+                return (null, false);
             }
 
             var plexMatchPath = Path.Combine(seriesPath, Constants.PlexMatchFileName);
             if (!File.Exists(plexMatchPath))
             {
-                return null;
+                return (null, false);
             }
 
             try
@@ -340,12 +449,12 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                     mapping = _animeListMapper.GetMappingByAniListId(plexData.AniListId.Value);
                 }
 
-                return mapping?.kitsu_id?.ToString();
+                return (mapping?.kitsu_id?.ToString(), false);
             }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Failed to resolve Kitsu ID from .plexmatch for {Path}", plexMatchPath);
-                return null;
+                return (null, false);
             }
         }
 
@@ -585,7 +694,9 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
-                throw new TimeoutException($"Request to {url} timed out after {ExternalRequestTimeout.TotalSeconds:F0} s");
+                // Never log the query string: TMDB requests carry the user's API key there.
+                var safeUrl = Uri.TryCreate(url, UriKind.Absolute, out var parsed) ? parsed.GetLeftPart(UriPartial.Path) : "external service";
+                throw new TimeoutException($"Request to {safeUrl} timed out after {ExternalRequestTimeout.TotalSeconds:F0} s");
             }
         }
 
