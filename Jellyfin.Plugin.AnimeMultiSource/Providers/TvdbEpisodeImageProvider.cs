@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -481,10 +482,19 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 return Array.Empty<RemoteImageInfo>();
             }
 
-            var url = $"https://api.themoviedb.org/3/tv/{tmdbId.Value}/season/{numbers.Season.Value}/episode/{numbers.Episode.Value}/images?api_key={Uri.EscapeDataString(config.TmdbApiKey)}";
+            // TMDB v4 read tokens are JWTs and must go in an Authorization header. Keep the
+            // legacy v3 query-string key working for existing installs.
+            var tmdbKey = config.TmdbApiKey.Trim();
+            var useBearer = tmdbKey.StartsWith("eyJ", StringComparison.Ordinal);
+            var url = $"https://api.themoviedb.org/3/tv/{tmdbId.Value}/season/{numbers.Season.Value}/episode/{numbers.Episode.Value}/images";
+            if (!useBearer)
+            {
+                url += $"?api_key={Uri.EscapeDataString(tmdbKey)}";
+            }
+
             try
             {
-                using var response = await SendTmdbRequestAsync(url, cancellationToken);
+                using var response = await SendTmdbRequestAsync(url, tmdbKey, useBearer, cancellationToken);
                 if (!response.IsSuccessStatusCode)
                 {
                     _logger.LogInformation("TMDB returned {StatusCode} for show {TmdbId} S{Season}E{Episode}", response.StatusCode, tmdbId, numbers.Season, numbers.Episode);
@@ -651,12 +661,19 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 : episodeDirectory;
         }
 
-        private async Task<HttpResponseMessage> SendTmdbRequestAsync(string url, CancellationToken cancellationToken)
+        private async Task<HttpResponseMessage> SendTmdbRequestAsync(string url, string apiKey, bool useBearer, CancellationToken cancellationToken)
         {
             for (var attempt = 1; attempt <= 3; attempt++)
             {
                 await EnforceTmdbRateLimitAsync(cancellationToken);
-                var response = await GetWithTimeoutAsync(_jikanClient, url, cancellationToken);
+
+                using var request = new HttpRequestMessage(HttpMethod.Get, url);
+                if (useBearer)
+                {
+                    request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+                }
+
+                var response = await SendWithTimeoutAsync(_jikanClient, request, cancellationToken);
                 if (response.StatusCode != System.Net.HttpStatusCode.TooManyRequests || attempt == 3)
                 {
                     return response;
@@ -669,6 +686,20 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             }
 
             throw new InvalidOperationException("TMDB request retry loop exited unexpectedly.");
+        }
+
+        private static async Task<HttpResponseMessage> SendWithTimeoutAsync(HttpClient client, HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(ExternalRequestTimeout);
+            try
+            {
+                return await client.SendAsync(request, timeout.Token);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                throw new TimeoutException($"Request to {request.RequestUri?.GetLeftPart(UriPartial.Path)} timed out after {ExternalRequestTimeout.TotalSeconds:F0} s");
+            }
         }
 
         private static async Task EnforceTmdbRateLimitAsync(CancellationToken cancellationToken)

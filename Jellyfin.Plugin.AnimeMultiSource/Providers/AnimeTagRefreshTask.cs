@@ -63,6 +63,9 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
         public Task ExecuteAsync(IProgress<double> progress, CancellationToken cancellationToken)
         {
+            // Keep the long-lived provider caches bounded even if no new entries are added.
+            ApiService.TrimCaches();
+
             var state = LoadState();
 
             var seriesQuery = new InternalItemsQuery

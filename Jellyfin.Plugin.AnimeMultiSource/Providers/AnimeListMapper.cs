@@ -27,6 +27,13 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
         private static readonly TimeSpan CacheDuration = TimeSpan.FromHours(Constants.AnimeListCacheHours);
         private static readonly TimeSpan FailureBackoff = TimeSpan.FromMinutes(5);
         private static readonly TimeSpan DownloadTimeout = TimeSpan.FromSeconds(60);
+        private const int MinimumFribbMappings = 1000;
+        private static int _lastMappingCount;
+        private static readonly JsonSerializerOptions MappingJsonOptions = new()
+        {
+            NumberHandling = JsonNumberHandling.AllowReadingFromString,
+            PropertyNameCaseInsensitive = true
+        };
 
         public AnimeListMapper(HttpClient httpClient, ILogger logger)
         {
@@ -64,45 +71,50 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
                 _logger.LogInformation("Loading anime lists from Fribb...");
 
-                var options = new JsonSerializerOptions
-                {
-                    NumberHandling = JsonNumberHandling.AllowReadingFromString,
-                    PropertyNameCaseInsensitive = true
-                };
-
                 using var timeout = new CancellationTokenSource(DownloadTimeout);
                 using var response = await _httpClient.GetAsync(Constants.FribbAnimeListsUrl, timeout.Token);
                 response.EnsureSuccessStatusCode();
                 var json = await response.Content.ReadAsStringAsync(timeout.Token);
-                var mappings = JsonSerializer.Deserialize<List<AnimeMapping>>(json, options);
+                var mappings = ParseMappings(json, "Fribb anime list");
+
+                // A truncated or badly-shaped download must not replace a good in-memory set.
+                if (mappings.Count < MinimumFribbMappings)
+                {
+                    throw new InvalidOperationException($"Fribb anime list had only {mappings.Count} usable mappings; keeping the previous mapping set.");
+                }
+
+                if (_lastMappingCount >= MinimumFribbMappings && mappings.Count < _lastMappingCount / 2)
+                {
+                    throw new InvalidOperationException($"Fribb anime list shrank from {_lastMappingCount} to {mappings.Count} mappings; keeping the previous mapping set.");
+                }
 
                 // Handle duplicates by taking the first occurrence
-                var mappingsByTvdb = mappings?
+                var mappingsByTvdb = mappings
                     .Where(x => x.TvdbId.HasValue)
                     .GroupBy(x => x.TvdbId!.Value.ToString(CultureInfo.InvariantCulture))
                     .ToDictionary(g => g.Key, g => SelectPreferredMapping(g)) // Prefer TV over OVA/OVA specials for duplicates
                     ?? new Dictionary<string, AnimeMapping>();
 
-                var mappingsByImdb = mappings?
+                var mappingsByImdb = mappings
                     .SelectMany(m => (m.imdb_id ?? Enumerable.Empty<string>()).Select(id => (id, m)))
                     .Where(x => !string.IsNullOrEmpty(x.id))
                     .GroupBy(x => x.id)
                     .ToDictionary(g => g.Key, g => SelectPreferredMapping(g.Select(x => x.m)))
                     ?? new Dictionary<string, AnimeMapping>();
 
-                var mappingsByAniList = mappings?
+                var mappingsByAniList = mappings
                     .Where(x => x.anilist_id.HasValue)
                     .GroupBy(x => x.anilist_id!.Value)
                     .ToDictionary(g => g.Key, g => SelectPreferredMapping(g))
                     ?? new Dictionary<long, AnimeMapping>();
 
-                var mappingsByMal = mappings?
+                var mappingsByMal = mappings
                     .Where(x => x.mal_id.HasValue)
                     .GroupBy(x => x.mal_id!.Value)
                     .ToDictionary(g => g.Key, g => SelectPreferredMapping(g))
                     ?? new Dictionary<long, AnimeMapping>();
 
-                var mappingsByKitsu = mappings?
+                var mappingsByKitsu = mappings
                     .Where(x => x.kitsu_id.HasValue)
                     .GroupBy(x => x.kitsu_id!.Value)
                     .ToDictionary(g => g.Key, g => SelectPreferredMapping(g))
@@ -111,7 +123,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 // TMDB TV ids are shared by every season of a show. Pick the preferred TV row
                 // deterministically (lowest AniList id) as the root; the season provider walks
                 // the sequel chain from there.
-                var mappingsByTmdb = mappings?
+                var mappingsByTmdb = mappings
                     .Select(m => (Id: m.PreferredTmdbId, Mapping: m))
                     .Where(x => x.Id.HasValue)
                     .GroupBy(x => x.Id!.Value)
@@ -126,11 +138,12 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 _mappingsByMal = mappingsByMal;
                 _mappingsByKitsu = mappingsByKitsu;
                 _mappingsByTmdb = mappingsByTmdb;
+                _lastMappingCount = mappings.Count;
                 _lastUpdated = DateTime.UtcNow;
                 _lastFailure = DateTimeOffset.MinValue;
 
                 _logger.LogInformation("Loaded {Count} anime mappings with {TvdbCount} TVDB entries and {ImdbCount} IMDb entries",
-                    mappings?.Count ?? 0, _mappingsByTvdb.Count, _mappingsByImdb.Count);
+                    mappings.Count, _mappingsByTvdb.Count, _mappingsByImdb.Count);
             }
             catch (Exception ex)
             {
@@ -144,6 +157,54 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             }
         }
 
+        private List<AnimeMapping> ParseMappings(string json, string sourceName)
+        {
+            using var document = JsonDocument.Parse(json);
+            if (document.RootElement.ValueKind != JsonValueKind.Array)
+            {
+                throw new JsonException($"{sourceName} was not a JSON array.");
+            }
+
+            var mappings = new List<AnimeMapping>();
+            var skipped = 0;
+            foreach (var element in document.RootElement.EnumerateArray())
+            {
+                try
+                {
+                    var mapping = element.Deserialize<AnimeMapping>(MappingJsonOptions);
+                    if (mapping == null)
+                    {
+                        skipped++;
+                        continue;
+                    }
+
+                    // JsonElement values point into the JsonDocument above; clone the TMDB
+                    // element so it stays readable after this method disposes the document.
+                    if (mapping.themoviedb_id.HasValue)
+                    {
+                        mapping.themoviedb_id = mapping.themoviedb_id.Value.Clone();
+                    }
+
+                    mappings.Add(mapping);
+                }
+                catch (Exception ex) when (ex is JsonException or NotSupportedException)
+                {
+                    skipped++;
+                    if (skipped <= 5)
+                    {
+                        _logger.LogDebug(ex, "Skipping malformed {SourceName} record", sourceName);
+                    }
+                }
+            }
+
+            if (skipped > 0)
+            {
+                _logger.LogWarning("Skipped {SkippedCount} malformed records while parsing {SourceName}", skipped, sourceName);
+            }
+
+            return mappings;
+        }
+
         // Fribb's list sometimes lacks anidb/kitsu/anisearch/livechart ids for very new titles
         // it hasn't cross-referenced yet. Backfill those specific gaps (never overwrite what
         // Fribb already has) from Fribb's own copy of manami-project/anime-offline-database,
@@ -152,21 +213,11 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
         {
             try
             {
-                var options = new JsonSerializerOptions
-                {
-                    NumberHandling = JsonNumberHandling.AllowReadingFromString,
-                    PropertyNameCaseInsensitive = true
-                };
-
                 using var timeout = new CancellationTokenSource(DownloadTimeout);
                 using var response = await _httpClient.GetAsync(Constants.AnimeOfflineDatabaseUrl, timeout.Token);
                 response.EnsureSuccessStatusCode();
                 var json = await response.Content.ReadAsStringAsync(timeout.Token);
-                var supplemental = JsonSerializer.Deserialize<List<AnimeMapping>>(json, options);
-                if (supplemental == null)
-                {
-                    return;
-                }
+                var supplemental = ParseMappings(json, "Fribb offline database");
 
                 var backfilled = 0;
                 foreach (var entry in supplemental)

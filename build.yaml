@@ -1,7 +1,7 @@
 ---
 name: "Anime Multi Source"
 guid: "8eca6f17-71fe-4309-a670-3cae083f22bd"
-version: "1.1.0.3"
+version: "1.1.0.4"
 targetAbi: "12.0.0.0"
 framework: "net10.0"
 overview: "Anime metadata, tags, art, and people pulled from multiple sources with rate limiting and persistent caches."
@@ -14,4 +14,4 @@ artifacts:
 - "plugin.json"
 - "meta.json"
 changelog: >
-  Review release: fixes season episode stills, manual Identify without .plexmatch, explicit ID precedence, specials/season metadata, configuration saves, exclusions, external API resilience, image URL validation, provider ordering, and release packaging.
+  TMDB v4 token support, bounded AniList/AniDB/people caches, per-record Fribb parsing with truncation guards, cancellation propagation through AniDB/AniList calls, and per-series AnimeSchedule refresh gating.

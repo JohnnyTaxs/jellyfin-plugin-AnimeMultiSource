@@ -34,6 +34,9 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
         private static DateTime _aniDbDailyCountDate = DateTime.UtcNow.Date;
         private static int _aniDbDailyRequestCount;
         private const int MaxSeasonWalk = 100;
+        private const int AniListMaxCacheEntries = 5000;
+        private const int AniListMaxPeopleCacheEntries = 20000;
+        private const int AniDbMaxCacheEntries = 5000;
         private const int AniDbDailySoftCap = 5;
         private const int AniDbSlowRateLimitMs = 8000;
         private static readonly object AniListRateLock = new();
@@ -41,12 +44,12 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
         private static int _aniListWindowCount;
         private static DateTimeOffset _aniListWindowStart = DateTimeOffset.UtcNow;
         private const int AniListMaxPerMinute = 30;
-        private static readonly TimeSpan AniListCacheDuration = TimeSpan.FromDays(5);
+        private static readonly TimeSpan AniListCacheDuration = TimeSpan.FromDays(30);
         private static readonly ConcurrentDictionary<int, AniListCacheEntry<AniListMedia>> _aniListMediaCache = new();
         private static readonly ConcurrentDictionary<int, AniListCacheEntry<AniListSeasonDetail>> _aniListSeasonCache = new();
         private static readonly ConcurrentDictionary<int, AniListCacheEntry<int>> _aniListRootCache = new();
         private static readonly ConcurrentDictionary<int, AniListCacheEntry<List<PersonInfo>>> _aniListPeopleCache = new();
-        private static readonly TimeSpan PersistentCacheMaxAge = TimeSpan.FromDays(5);
+        private static readonly TimeSpan PersistentCacheMaxAge = TimeSpan.FromDays(30);
         private static readonly object PersistentCacheLock = new();
         private static bool _persistentCacheLoaded;
         private static string? _persistentCachePath;
@@ -78,7 +81,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             _httpClient.DefaultRequestHeaders.Add("User-Agent", "Jellyfin-AnimeMultiSource-Plugin/1.0");
         }
 
-        public async Task<JikanAnime?> GetJikanAnimeAsync(long malId)
+        public async Task<JikanAnime?> GetJikanAnimeAsync(long malId, CancellationToken cancellationToken = default)
         {
             try
             {
@@ -95,7 +98,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 var url = $"https://api.jikan.moe/v4/anime/{intMalId}";
                 _logger.LogDebug("Fetching Jikan data from: {Url}", url);
 
-                using var response = await SendJikanRequestAsync(url, "anime");
+                using var response = await SendJikanRequestAsync(url, "anime", cancellationToken);
                 if (response == null)
                 {
                     return null;
@@ -112,6 +115,10 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                     _logger.LogWarning("Jikan API returned status code: {StatusCode}", response.StatusCode);
                 }
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error fetching Jikan data for MAL ID {MalId}", malId);
@@ -120,7 +127,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             return null;
         }
 
-        public async Task<AniListMedia?> GetAniListAnimeAsync(long anilistId)
+        public async Task<AniListMedia?> GetAniListAnimeAsync(long anilistId, CancellationToken cancellationToken = default)
         {
             try
             {
@@ -190,11 +197,13 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 var jsonRequest = JsonSerializer.Serialize(request);
                 using var content = new StringContent(jsonRequest, System.Text.Encoding.UTF8, "application/json");
 
-                await EnforceAniListRateLimitAsync();
-                using var response = await _httpClient.PostAsync("https://graphql.anilist.co", content);
+                await EnforceAniListRateLimitAsync(cancellationToken);
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                timeout.CancelAfter(ExternalRequestTimeout);
+                using var response = await _httpClient.PostAsync("https://graphql.anilist.co", content, timeout.Token);
                 if (response.IsSuccessStatusCode)
                 {
-                    var json = await response.Content.ReadAsStringAsync();
+                    var json = await response.Content.ReadAsStringAsync(timeout.Token);
                     var aniListResponse = JsonSerializer.Deserialize<AniListResponse>(json);
                     var media = aniListResponse?.Data?.Media;
                     if (media != null)
@@ -208,6 +217,10 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                     _logger.LogWarning("AniList API returned status code: {StatusCode}", response.StatusCode);
                 }
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error fetching AniList data for AniList ID {AniListId}", anilistId);
@@ -216,7 +229,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             return null;
         }
 
-        public async Task<int?> GetAniListIdByMalIdAsync(long malId)
+        public async Task<int?> GetAniListIdByMalIdAsync(long malId, CancellationToken cancellationToken = default)
         {
             if (malId <= 0 || malId > int.MaxValue)
             {
@@ -242,8 +255,9 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                     JsonSerializer.Serialize(request),
                     System.Text.Encoding.UTF8,
                     "application/json");
-                await EnforceAniListRateLimitAsync();
-                using var timeout = new CancellationTokenSource(ExternalRequestTimeout);
+                await EnforceAniListRateLimitAsync(cancellationToken);
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                timeout.CancelAfter(ExternalRequestTimeout);
                 using var response = await _httpClient.PostAsync("https://graphql.anilist.co", content, timeout.Token);
                 if (!response.IsSuccessStatusCode)
                 {
@@ -254,6 +268,10 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 var json = await response.Content.ReadAsStringAsync(timeout.Token);
                 var media = JsonSerializer.Deserialize<AniListResponse>(json)?.Data?.Media;
                 return media?.Id > 0 ? media.Id : null;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception ex)
             {
@@ -440,14 +458,14 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
         // side-story/alternative-format fallback used elsewhere) to whatever the latest known
         // entry is, so callers that need "is this franchise actually still going" - like the
         // series-level Status field - aren't stuck reading season 1's own long-stale verdict.
-        public async Task<AniListSeasonDetail?> GetLatestSeasonDetailAsync(int rootAniListId)
+        public async Task<AniListSeasonDetail?> GetLatestSeasonDetailAsync(int rootAniListId, CancellationToken cancellationToken = default)
         {
             var visited = new HashSet<int> { rootAniListId };
-            var current = await GetAniListSeasonDetailAsync(rootAniListId);
+            var current = await GetAniListSeasonDetailAsync(rootAniListId, cancellationToken: cancellationToken);
 
             while (current?.SequelAniListId is int nextId && visited.Add(nextId))
             {
-                var next = await GetAniListSeasonDetailAsync(nextId);
+                var next = await GetAniListSeasonDetailAsync(nextId, cancellationToken: cancellationToken);
                 if (next == null)
                 {
                     break;
@@ -459,7 +477,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             return current;
         }
 
-        public async Task<AniListSeasonDetail?> GetAniListSeasonDetailAsync(int aniListId, bool forceRefresh = false)
+        public async Task<AniListSeasonDetail?> GetAniListSeasonDetailAsync(int aniListId, bool forceRefresh = false, CancellationToken cancellationToken = default)
         {
             if (!forceRefresh && TryGetAniListCache(_aniListSeasonCache, aniListId, "season", out AniListSeasonDetail cached))
             {
@@ -498,15 +516,17 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             var jsonRequest = JsonSerializer.Serialize(request);
             using var content = new StringContent(jsonRequest, System.Text.Encoding.UTF8, "application/json");
 
-            await EnforceAniListRateLimitAsync();
-            using var response = await _httpClient.PostAsync("https://graphql.anilist.co", content);
+            await EnforceAniListRateLimitAsync(cancellationToken);
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(ExternalRequestTimeout);
+            using var response = await _httpClient.PostAsync("https://graphql.anilist.co", content, timeout.Token);
             if (!response.IsSuccessStatusCode)
             {
                 _logger.LogWarning("AniList season fetch failed for {AniListId} with status {Status}", aniListId, response.StatusCode);
                 return null;
             }
 
-            var json = await response.Content.ReadAsStringAsync();
+            var json = await response.Content.ReadAsStringAsync(timeout.Token);
             var aniListResponse = JsonSerializer.Deserialize<AniListResponse>(json);
             var media = aniListResponse?.Data?.Media;
             if (media == null)
@@ -541,7 +561,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             return detail;
         }
 
-        public async Task<AniListSeasonDetail?> GetSeasonByNumberAsync(int baseAniListId, int seasonNumber)
+        public async Task<AniListSeasonDetail?> GetSeasonByNumberAsync(int baseAniListId, int seasonNumber, CancellationToken cancellationToken = default)
         {
             if (seasonNumber < 0)
             {
@@ -558,12 +578,12 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
             if (seasonNumber == 0)
             {
-                return await GetSpecialSeasonDetailAsync(baseAniListId);
+                return await GetSpecialSeasonDetailAsync(baseAniListId, cancellationToken);
             }
 
             if (seasonNumber == 1)
             {
-                return await GetAniListSeasonDetailAsync(baseAniListId);
+                return await GetAniListSeasonDetailAsync(baseAniListId, cancellationToken: cancellationToken);
             }
 
             var currentId = baseAniListId;
@@ -573,7 +593,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
             for (int i = 1; i <= seasonNumber; i++)
             {
-                detail = await GetAniListSeasonDetailAsync(currentId);
+                detail = await GetAniListSeasonDetailAsync(currentId, cancellationToken: cancellationToken);
                 if (detail == null)
                 {
                     return null;
@@ -591,7 +611,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 {
                     // The cached detail already contains relations (the GraphQL query requests them),
                     // so there is no need for a second request here.
-                    nextId = await ResolveNextTvSequelAsync(detail);
+                    nextId = await ResolveNextTvSequelAsync(detail, cancellationToken);
                 }
 
                 if (!nextId.HasValue)
@@ -612,7 +632,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             return detail;
         }
 
-        private async Task<int?> ResolveNextTvSequelAsync(AniListSeasonDetail detail)
+        private async Task<int?> ResolveNextTvSequelAsync(AniListSeasonDetail detail, CancellationToken cancellationToken = default)
         {
             var visited = new HashSet<int>();
             var currentDetail = detail;
@@ -630,7 +650,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                     return null;
                 }
 
-                var sequelDetail = await GetAniListSeasonDetailAsync(nextId.Value, forceRefresh: true);
+                var sequelDetail = await GetAniListSeasonDetailAsync(nextId.Value, forceRefresh: true, cancellationToken: cancellationToken);
                 if (sequelDetail == null)
                 {
                     return null;
@@ -728,14 +748,14 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
             return false;
         }
-        private async Task<AniListSeasonDetail?> GetSpecialSeasonDetailAsync(int baseAniListId)
+        private async Task<AniListSeasonDetail?> GetSpecialSeasonDetailAsync(int baseAniListId, CancellationToken cancellationToken = default)
         {
             var visited = new HashSet<int>();
             var currentId = baseAniListId;
 
             while (visited.Add(currentId))
             {
-                var detail = await GetAniListSeasonDetailAsync(currentId);
+                var detail = await GetAniListSeasonDetailAsync(currentId, cancellationToken: cancellationToken);
                 if (detail == null)
                 {
                     return null;
@@ -745,7 +765,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 if (specialId.HasValue)
                 {
                     _logger.LogInformation("Using special/OVA AniList ID {SpecialId} for base AniList ID {BaseId}", specialId, baseAniListId);
-                    return await GetAniListSeasonDetailAsync(specialId.Value);
+                    return await GetAniListSeasonDetailAsync(specialId.Value, cancellationToken: cancellationToken);
                 }
 
                 if (!detail.SequelAniListId.HasValue)
@@ -760,7 +780,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             return null;
         }
 
-        public async Task<int> GetRootAniListIdAsync(long aniListId)
+        public async Task<int> GetRootAniListIdAsync(long aniListId, CancellationToken cancellationToken = default)
         {
             if (aniListId > int.MaxValue) return (int)aniListId;
             var startId = (int)aniListId;
@@ -776,7 +796,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             while (!visited.Contains(currentId))
             {
                 visited.Add(currentId);
-                var media = await GetAniListAnimeAsync(currentId);
+                var media = await GetAniListAnimeAsync(currentId, cancellationToken);
                 if (media?.Relations?.Edges == null)
                 {
                     break;
@@ -893,14 +913,14 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             return studios.Where(s => !string.IsNullOrEmpty(s)).Distinct().ToList();
         }
 
-        public async Task<List<PersonInfo>> GetPeopleAsync(long anilistId, long malId)
+        public async Task<List<PersonInfo>> GetPeopleAsync(long anilistId, long malId, CancellationToken cancellationToken = default)
         {
             var people = new List<PersonInfo>();
 
             try
             {
                 // Try AniList first for people data
-                var aniListPeople = await GetAniListPeopleAsync(anilistId);
+                var aniListPeople = await GetAniListPeopleAsync(anilistId, cancellationToken);
                 if (aniListPeople != null)
                 {
                     people.AddRange(aniListPeople);
@@ -909,7 +929,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 // If we don't have enough people, try Jikan as fallback
                 if (people.Count < 5 && malId > 0)
                 {
-                    var jikanPeople = await GetJikanPeopleAsync(malId);
+                    var jikanPeople = await GetJikanPeopleAsync(malId, cancellationToken);
                     if (jikanPeople != null)
                     {
                         // Merge without duplicates
@@ -922,6 +942,10 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                         }
                     }
                 }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception ex)
             {
@@ -943,7 +967,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             return ImageUrlValidator.IsAllowed(url) ? url : null;
         }
 
-        private async Task<List<PersonInfo>> GetAniListPeopleAsync(long anilistId)
+        private async Task<List<PersonInfo>> GetAniListPeopleAsync(long anilistId, CancellationToken cancellationToken = default)
         {
             try
             {
@@ -1003,16 +1027,22 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 var jsonRequest = JsonSerializer.Serialize(request);
                 using var content = new StringContent(jsonRequest, System.Text.Encoding.UTF8, "application/json");
 
-                await EnforceAniListRateLimitAsync();
-                using var response = await _httpClient.PostAsync("https://graphql.anilist.co", content);
+                await EnforceAniListRateLimitAsync(cancellationToken);
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                timeout.CancelAfter(ExternalRequestTimeout);
+                using var response = await _httpClient.PostAsync("https://graphql.anilist.co", content, timeout.Token);
                 if (response.IsSuccessStatusCode)
                 {
-                    var json = await response.Content.ReadAsStringAsync();
+                    var json = await response.Content.ReadAsStringAsync(timeout.Token);
                     var aniListResponse = JsonSerializer.Deserialize<AniListResponse>(json);
                     var people = ParseAniListPeople(aniListResponse?.Data?.Media);
-                    StoreAniListCache(_aniListPeopleCache, intAniListId, new List<PersonInfo>(people), "people");
+                    StoreAniListCache(_aniListPeopleCache, intAniListId, new List<PersonInfo>(people), "people", AniListMaxPeopleCacheEntries);
                     return people;
                 }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception ex)
             {
@@ -1022,7 +1052,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             return new List<PersonInfo>();
         }
 
-        private async Task<List<PersonInfo>> GetJikanPeopleAsync(long malId)
+        private async Task<List<PersonInfo>> GetJikanPeopleAsync(long malId, CancellationToken cancellationToken = default)
         {
             try
             {
@@ -1030,14 +1060,18 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 var intMalId = (int)malId;
 
                 var url = $"https://api.jikan.moe/v4/anime/{intMalId}/characters";
-                using var response = await SendJikanRequestAsync(url, "people");
+                using var response = await SendJikanRequestAsync(url, "people", cancellationToken);
 
                 if (response != null && response.IsSuccessStatusCode)
                 {
-                    var json = await response.Content.ReadAsStringAsync();
+                    var json = await response.Content.ReadAsStringAsync(cancellationToken);
                     var jikanResponse = JsonSerializer.Deserialize<JikanCharactersResponse>(json);
                     return ParseJikanPeople(jikanResponse?.Data);
                 }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception ex)
             {
@@ -1162,9 +1196,10 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             long anidbId,
             string clientName,
             string clientVersion,
-            int rateLimitMs = 2000)
+            int rateLimitMs = 2000,
+            CancellationToken cancellationToken = default)
         {
-            var data = await GetAniDbDataAsync(anidbId, clientName, clientVersion, rateLimitMs);
+            var data = await GetAniDbDataAsync(anidbId, clientName, clientVersion, rateLimitMs, cancellationToken);
             return data.Tags;
         }
 
@@ -1176,9 +1211,10 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             long anidbId,
             string clientName,
             string clientVersion,
-            int rateLimitMs = 2000)
+            int rateLimitMs = 2000,
+            CancellationToken cancellationToken = default)
         {
-            var data = await GetAniDbDataAsync(anidbId, clientName, clientVersion, rateLimitMs);
+            var data = await GetAniDbDataAsync(anidbId, clientName, clientVersion, rateLimitMs, cancellationToken);
             return data.MainTitle;
         }
 
@@ -1186,7 +1222,8 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             long anidbId,
             string clientName,
             string clientVersion,
-            int rateLimitMs = 2000)
+            int rateLimitMs = 2000,
+            CancellationToken cancellationToken = default)
         {
             var now = DateTimeOffset.UtcNow;
 
@@ -1210,7 +1247,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             var tags = new List<string>();
             string? mainTitle = null;
 
-            await AniDbRequestGate.WaitAsync().ConfigureAwait(false);
+            await AniDbRequestGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
                 var rateContext = GetAniDbRateLimitContext(rateLimitMs);
@@ -1223,7 +1260,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                         rateContext.RequestNumber,
                         rateContext.IsSlowMode ? "slow" : "fast",
                         rateContext.Date.ToString("yyyy-MM-dd"));
-                    await Task.Delay(waitMs);
+                    await Task.Delay(waitMs, cancellationToken);
                 }
                 else
                 {
@@ -1238,7 +1275,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
                 _logger.LogDebug("Fetching AniDB tags from: {Url}", url);
 
-                using var response = await _httpClient.GetAsync(url);
+                using var response = await _httpClient.GetAsync(url, cancellationToken);
                 _lastAniDbRequest = DateTime.UtcNow;
 
                 if (IsAniDbRateLimited(response))
@@ -1255,14 +1292,14 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                     // Try to read as string first (in case HttpClient already handled decompression)
                     try
                     {
-                        xmlContent = await response.Content.ReadAsStringAsync();
+                        xmlContent = await response.Content.ReadAsStringAsync(cancellationToken);
                         _logger.LogDebug("Read AniDB response as string, length: {Length}", xmlContent.Length);
                     }
                     catch
                     {
                         // If reading as string fails, try manual decompression
                         _logger.LogDebug("Failed to read as string, trying manual decompression...");
-                        byte[] responseData = await response.Content.ReadAsByteArrayAsync();
+                        byte[] responseData = await response.Content.ReadAsByteArrayAsync(cancellationToken);
 
                         if (IsGzipped(responseData))
                         {
@@ -1314,6 +1351,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                     {
                         var cacheEntry = new AniDbCacheEntry(DateTimeOffset.UtcNow, new List<string>(tags), mainTitle);
                         _aniDbCache[anidbId] = cacheEntry;
+                        TrimAniDbCache();
                         _logger.LogInformation("AniDB cache stored for ID {AniDbId} with {TagCount} tags and title '{MainTitle}'", anidbId, tags.Count, mainTitle);
                         PersistCachesToDiskSafe();
                     }
@@ -1329,6 +1367,10 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                         SetAniDbBan("AniDB non-success rate-limit response", backoff);
                     }
                 }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception ex)
             {
@@ -1902,11 +1944,63 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             return false;
         }
 
-        private void StoreAniListCache<T>(ConcurrentDictionary<int, AniListCacheEntry<T>> cache, int key, T value, string cacheName)
+        private void StoreAniListCache<T>(
+            ConcurrentDictionary<int, AniListCacheEntry<T>> cache,
+            int key,
+            T value,
+            string cacheName,
+            int maxEntries = AniListMaxCacheEntries)
         {
             cache[key] = new AniListCacheEntry<T>(DateTimeOffset.UtcNow, value);
+            TrimCache(cache, maxEntries);
             _logger.LogDebug("AniList cache stored for {CacheName} {AniListId}", cacheName, key);
             PersistCachesToDiskSafe();
+        }
+
+        private static void TrimCache<T>(ConcurrentDictionary<int, AniListCacheEntry<T>> cache, int maxEntries)
+        {
+            var excess = cache.Count - maxEntries;
+            if (excess <= 0)
+            {
+                return;
+            }
+
+            foreach (var key in cache
+                .OrderBy(pair => pair.Value.CachedAt)
+                .Take(excess)
+                .Select(pair => pair.Key)
+                .ToList())
+            {
+                cache.TryRemove(key, out _);
+            }
+        }
+
+        private static void TrimAniDbCache()
+        {
+            var excess = _aniDbCache.Count - AniDbMaxCacheEntries;
+            if (excess <= 0)
+            {
+                return;
+            }
+
+            foreach (var key in _aniDbCache
+                .OrderBy(pair => pair.Value.CachedAt)
+                .Take(excess)
+                .Select(pair => pair.Key)
+                .ToList())
+            {
+                _aniDbCache.TryRemove(key, out _);
+            }
+        }
+
+        // Called by the scheduled refresh task and after cache restores.
+        public static void TrimCaches()
+        {
+            TrimCache(_aniListMediaCache, AniListMaxCacheEntries);
+            TrimCache(_aniListSeasonCache, AniListMaxCacheEntries);
+            TrimCache(_aniListRootCache, AniListMaxCacheEntries);
+            TrimCache(_aniListPeopleCache, AniListMaxPeopleCacheEntries);
+            TrimAniDbCache();
         }
 
         private void EnsurePersistentCacheLoaded()
@@ -1956,11 +2050,11 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                     return;
                 }
 
-                RestoreCache(_aniDbCache, snapshot.AniDb);
-                RestoreCache(_aniListMediaCache, snapshot.AniListMedia);
-                RestoreCache(_aniListSeasonCache, snapshot.AniListSeason);
-                RestoreCache(_aniListRootCache, snapshot.AniListRoot);
-                RestoreCache(_aniListPeopleCache, snapshot.AniListPeople);
+                RestoreCache(_aniDbCache, snapshot.AniDb, AniDbMaxCacheEntries);
+                RestoreCache(_aniListMediaCache, snapshot.AniListMedia, AniListMaxCacheEntries);
+                RestoreCache(_aniListSeasonCache, snapshot.AniListSeason, AniListMaxCacheEntries);
+                RestoreCache(_aniListRootCache, snapshot.AniListRoot, AniListMaxCacheEntries);
+                RestoreCache(_aniListPeopleCache, snapshot.AniListPeople, AniListMaxPeopleCacheEntries);
 
                 _logger.LogInformation("Persistent cache loaded from {Path}", path);
             }
@@ -2020,7 +2114,10 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             }
         }
 
-        private void RestoreCache<TKey>(ConcurrentDictionary<TKey, AniDbCacheEntry> target, Dictionary<TKey, AniDbCacheEntry>? source)
+        private void RestoreCache<TKey>(
+            ConcurrentDictionary<TKey, AniDbCacheEntry> target,
+            Dictionary<TKey, AniDbCacheEntry>? source,
+            int maxEntries)
             where TKey : notnull
         {
             if (source == null)
@@ -2036,9 +2133,25 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                     target[kvp.Key] = kvp.Value;
                 }
             }
+
+            var excess = target.Count - maxEntries;
+            if (excess > 0)
+            {
+                foreach (var key in target
+                    .OrderBy(pair => pair.Value.CachedAt)
+                    .Take(excess)
+                    .Select(pair => pair.Key)
+                    .ToList())
+                {
+                    target.TryRemove(key, out _);
+                }
+            }
         }
 
-        private void RestoreCache<TKey, TValue>(ConcurrentDictionary<TKey, AniListCacheEntry<TValue>> target, Dictionary<TKey, AniListCacheEntry<TValue>>? source)
+        private void RestoreCache<TKey, TValue>(
+            ConcurrentDictionary<TKey, AniListCacheEntry<TValue>> target,
+            Dictionary<TKey, AniListCacheEntry<TValue>>? source,
+            int maxEntries)
             where TKey : notnull
         {
             if (source == null)
@@ -2052,6 +2165,19 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 if (now - kvp.Value.CachedAt < PersistentCacheMaxAge)
                 {
                     target[kvp.Key] = kvp.Value;
+                }
+            }
+
+            var excess = target.Count - maxEntries;
+            if (excess > 0)
+            {
+                foreach (var key in target
+                    .OrderBy(pair => pair.Value.CachedAt)
+                    .Take(excess)
+                    .Select(pair => pair.Key)
+                    .ToList())
+                {
+                    target.TryRemove(key, out _);
                 }
             }
         }

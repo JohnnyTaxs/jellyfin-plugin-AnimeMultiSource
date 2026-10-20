@@ -63,7 +63,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
                 if (series[i].ProviderIds != null && series[i].ProviderIds.ContainsKey(Constants.AniListProviderId))
                 {
-                    await _updater.RefreshSeriesAsync(series[i]);
+                    await _updater.RefreshSeriesAsync(series[i], cancellationToken);
                 }
 
                 progress.Report(100.0 * (i + 1) / series.Count);

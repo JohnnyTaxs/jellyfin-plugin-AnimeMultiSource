@@ -57,7 +57,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
             try
             {
-                var metadata = await _animeService.GetMetadataForSeries(info, config);
+                var metadata = await _animeService.GetMetadataForSeries(info, config, cancellationToken);
                 if (metadata == null)
                 {
                     _logger.LogDebug("No metadata found for {Path}", info.Path);

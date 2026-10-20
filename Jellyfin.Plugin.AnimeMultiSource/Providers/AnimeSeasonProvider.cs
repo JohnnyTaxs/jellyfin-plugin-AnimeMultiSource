@@ -79,7 +79,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 return result;
             }
 
-            var baseAniListId = await ResolveRootAniListIdAsync(info);
+            var baseAniListId = await ResolveRootAniListIdAsync(info, cancellationToken);
             var seasonNumber = resolvedSeasonNumber.Value;
             if (!baseAniListId.HasValue)
             {
@@ -96,7 +96,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
             _logger.LogInformation("Fetching season metadata for {Name} S{SeasonNumber} using AniList base ID {AniListId}", info.Name, seasonNumber, baseAniListId);
 
-            var seasonDetail = await _apiService.GetSeasonByNumberAsync(baseAniListId.Value, seasonNumber);
+            var seasonDetail = await _apiService.GetSeasonByNumberAsync(baseAniListId.Value, seasonNumber, cancellationToken);
             if (seasonDetail == null)
             {
                 if (_config.SeasonTitleFormat == SeasonTitleFormatType.Numbered)
@@ -145,7 +145,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
             if (ShouldUseJikanOverview() && malIdForOverview.HasValue)
             {
-                var jikanData = await _apiService.GetJikanAnimeAsync(malIdForOverview.Value);
+                var jikanData = await _apiService.GetJikanAnimeAsync(malIdForOverview.Value, cancellationToken);
                 overview = jikanData?.Synopsis;
             }
 
@@ -203,7 +203,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             // Season-level tags from AniDB via mapping
             if (_config.EnableAniDbTags)
             {
-                var seasonTags = await GetSeasonTagsAsync(seasonDetail.AniListId);
+                var seasonTags = await GetSeasonTagsAsync(seasonDetail.AniListId, cancellationToken);
                 season.Tags = seasonTags.ToArray();
             }
 
@@ -259,20 +259,20 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             return ImageHttpClient.GetAsync(url, cancellationToken);
         }
 
-        private async Task<int?> ResolveRootAniListIdAsync(SeasonInfo info)
+        private async Task<int?> ResolveRootAniListIdAsync(SeasonInfo info, CancellationToken cancellationToken = default)
         {
             // 1) Try provider IDs from series or season
             var idFromInfo = GetAniListIdFromInfo(info);
             if (idFromInfo.HasValue)
             {
-                return await _apiService.GetRootAniListIdAsync(idFromInfo.Value);
+                return await _apiService.GetRootAniListIdAsync(idFromInfo.Value, cancellationToken);
             }
 
             // 1b) A manual Identify can leave only a MAL/Kitsu/TVDB/IMDb id on the series.
-            var mappedId = await ResolveAniListIdFromOtherProviderIdsAsync(info);
+            var mappedId = await ResolveAniListIdFromOtherProviderIdsAsync(info, cancellationToken);
             if (mappedId.HasValue)
             {
-                return await _apiService.GetRootAniListIdAsync(mappedId.Value);
+                return await _apiService.GetRootAniListIdAsync(mappedId.Value, cancellationToken);
             }
 
             // 2) Try reading parent .plexmatch and mapping via Fribb list
@@ -293,7 +293,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
             try
             {
-                var content = await File.ReadAllTextAsync(plexMatchPath);
+                var content = await File.ReadAllTextAsync(plexMatchPath, cancellationToken);
                 var plexData = _plexMatchParser.ParsePlexMatch(content);
 
                 await _animeListMapper.LoadAnimeListsAsync();
@@ -325,12 +325,16 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                     mapping = _animeListMapper.GetMappingByTmdbId(plexData.TmdbId.Value);
                 }
 
-                var rootId = await GetRootFromMappingAsync(mapping);
+                var rootId = await GetRootFromMappingAsync(mapping, cancellationToken);
                 if (rootId.HasValue)
                 {
                     _logger.LogInformation("Resolved AniList ID {AniListId} for series '{Title}' via .plexmatch", rootId, plexData.Title);
                     return rootId;
                 }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception ex)
             {
@@ -340,44 +344,44 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             return null;
         }
 
-        private async Task<int?> ResolveAniListIdFromOtherProviderIdsAsync(SeasonInfo info)
+        private async Task<int?> ResolveAniListIdFromOtherProviderIdsAsync(SeasonInfo info, CancellationToken cancellationToken = default)
         {
             await _animeListMapper.LoadAnimeListsAsync();
 
             if (TryGetProviderId(info, Constants.MalProviderId, out var malValue) &&
                 long.TryParse(malValue, out var malId))
             {
-                return await GetRootFromMappingAsync(_animeListMapper.GetMappingByMalId(malId));
+                return await GetRootFromMappingAsync(_animeListMapper.GetMappingByMalId(malId), cancellationToken);
             }
 
             if (TryGetProviderId(info, Constants.KitsuProviderId, out var kitsuValue) &&
                 long.TryParse(kitsuValue, out var kitsuId))
             {
-                return await GetRootFromMappingAsync(_animeListMapper.GetMappingByKitsuId(kitsuId));
+                return await GetRootFromMappingAsync(_animeListMapper.GetMappingByKitsuId(kitsuId), cancellationToken);
             }
 
             if (TryGetProviderId(info, MetadataProvider.Tmdb.ToString(), out var tmdbValue) &&
                 long.TryParse(tmdbValue, out var tmdbId))
             {
-                return await GetRootFromMappingAsync(_animeListMapper.GetMappingByTmdbId(tmdbId));
+                return await GetRootFromMappingAsync(_animeListMapper.GetMappingByTmdbId(tmdbId), cancellationToken);
             }
 
             if (TryGetProviderId(info, MetadataProvider.Tvdb.ToString(), out var tvdbValue) &&
                 long.TryParse(tvdbValue, out _))
             {
-                return await GetRootFromMappingAsync(_animeListMapper.GetMappingByTvdbId(tvdbValue));
+                return await GetRootFromMappingAsync(_animeListMapper.GetMappingByTvdbId(tvdbValue), cancellationToken);
             }
 
             if (TryGetProviderId(info, MetadataProvider.Imdb.ToString(), out var imdbValue) &&
                 !string.IsNullOrWhiteSpace(imdbValue))
             {
-                return await GetRootFromMappingAsync(_animeListMapper.GetMappingByImdbId(imdbValue));
+                return await GetRootFromMappingAsync(_animeListMapper.GetMappingByImdbId(imdbValue), cancellationToken);
             }
 
             return null;
         }
 
-        private async Task<int?> GetRootFromMappingAsync(AnimeMapping? mapping)
+        private async Task<int?> GetRootFromMappingAsync(AnimeMapping? mapping, CancellationToken cancellationToken = default)
         {
             if (mapping == null)
             {
@@ -387,11 +391,11 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             var aniListId = mapping.anilist_id;
             if (!aniListId.HasValue && mapping.mal_id.HasValue)
             {
-                aniListId = await _apiService.GetAniListIdByMalIdAsync(mapping.mal_id.Value);
+                aniListId = await _apiService.GetAniListIdByMalIdAsync(mapping.mal_id.Value, cancellationToken);
             }
 
             return aniListId.HasValue
-                ? await _apiService.GetRootAniListIdAsync(aniListId.Value)
+                ? await _apiService.GetRootAniListIdAsync(aniListId.Value, cancellationToken)
                 : null;
         }
 
@@ -541,7 +545,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             return null;
         }
 
-        private async Task<List<string>> GetSeasonTagsAsync(int aniListSeasonId)
+        private async Task<List<string>> GetSeasonTagsAsync(int aniListSeasonId, CancellationToken cancellationToken = default)
         {
             try
             {
@@ -557,7 +561,8 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                     aniDbId.Value,
                     _config.AniDbClientName,
                     _config.AniDbClientVersion,
-                    _config.AniDbRateLimit);
+                    _config.AniDbRateLimit,
+                    cancellationToken);
 
                 if (tags == null || tags.Count == 0)
                 {
@@ -567,6 +572,10 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 var filtered = _tagFilterService.FilterTags(tags);
                 _tagFilterService.LogFilteredTags(_logger, tags, filtered);
                 return filtered;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception ex)
             {

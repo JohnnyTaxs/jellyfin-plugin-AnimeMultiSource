@@ -134,7 +134,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
         private static int _serviceCallCount = 0;
 
-        public async Task<AnimeMetadata?> GetMetadataForSeries(SeriesInfo info, Configuration.PluginConfiguration config)
+        public async Task<AnimeMetadata?> GetMetadataForSeries(SeriesInfo info, Configuration.PluginConfiguration config, CancellationToken cancellationToken = default)
         {
             var callId = Interlocked.Increment(ref _serviceCallCount);
             _logger.LogInformation("=== SERVICE CALL #{CallId} for: {Name} ===", callId, info.Name);
@@ -148,7 +148,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             if (File.Exists(plexMatchPath))
             {
                 _logger.LogInformation("Found .plexmatch file at {PlexMatchPath}", plexMatchPath);
-                var plexMatchContent = await File.ReadAllTextAsync(plexMatchPath);
+                var plexMatchContent = await File.ReadAllTextAsync(plexMatchPath, cancellationToken);
                 plexMatchData = _plexMatchParser.ParsePlexMatch(plexMatchContent);
             }
             else
@@ -240,7 +240,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             // Resolve it so seasons and AniList-backed metadata still work.
             if (!mapping.anilist_id.HasValue && mapping.mal_id.HasValue)
             {
-                var mappedAniListId = await _apiService.GetAniListIdByMalIdAsync(mapping.mal_id.Value);
+                var mappedAniListId = await _apiService.GetAniListIdByMalIdAsync(mapping.mal_id.Value, cancellationToken);
                 if (mappedAniListId.HasValue)
                 {
                     mapping.anilist_id = mappedAniListId.Value;
@@ -291,7 +291,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             if (mapping.anilist_id.HasValue)
             {
                 var mappedAniListIdValue = mapping.anilist_id!.Value;
-                aniListData = await _apiService.GetAniListAnimeAsync(mappedAniListIdValue);
+                aniListData = await _apiService.GetAniListAnimeAsync(mappedAniListIdValue, cancellationToken);
 
                 var keepMapping = _keepAniListMappingIds.Contains(mappedAniListIdValue);
 
@@ -299,13 +299,13 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 // try walking PREQUEL links to find the closest year match for the plexmatch year.
                 if (!keepMapping && plexMatchData.Year.HasValue && aniListData?.Relations?.Edges != null)
                 {
-                    var prequelRoot = await FindBestPrequelRootAsync(mappedAniListIdValue, plexMatchData.Year!.Value);
+                    var prequelRoot = await FindBestPrequelRootAsync(mappedAniListIdValue, plexMatchData.Year!.Value, cancellationToken);
                     if (prequelRoot.HasValue && prequelRoot.Value != mappedAniListIdValue)
                     {
                         _logger.LogInformation("Switching to AniList prequel {PrequelId} for '{Title}' based on year match to {Year}",
                             prequelRoot, plexMatchData.Title, plexMatchData.Year);
                         rootAniListId = prequelRoot;
-                        aniListData = await _apiService.GetAniListAnimeAsync(prequelRoot.Value);
+                        aniListData = await _apiService.GetAniListAnimeAsync(prequelRoot.Value, cancellationToken);
 
                         var prequelMapping = _animeListMapper.GetMappingByAniListId(prequelRoot.Value);
                         if (prequelMapping != null && prequelMapping.TvdbId.HasValue && mapping.TvdbId.HasValue &&
@@ -318,7 +318,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
                 var proposedRoot = keepMapping
                     ? (rootAniListId ?? mapping.anilist_id)
-                    : await _apiService.GetRootAniListIdAsync(rootAniListId ?? mappedAniListIdValue);
+                    : await _apiService.GetRootAniListIdAsync(rootAniListId ?? mappedAniListIdValue, cancellationToken);
 
                 if (!keepMapping && proposedRoot != mapping.anilist_id)
                 {
@@ -328,8 +328,8 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 // Choose between mapped vs root based on year proximity when available
                 if (proposedRoot.HasValue && proposedRoot != mappedAniListIdValue && !keepMapping)
                 {
-                    var mappedMedia = await _apiService.GetAniListAnimeAsync(mappedAniListIdValue);
-                    var rootMedia = await _apiService.GetAniListAnimeAsync(proposedRoot.Value);
+                    var mappedMedia = await _apiService.GetAniListAnimeAsync(mappedAniListIdValue, cancellationToken);
+                    var rootMedia = await _apiService.GetAniListAnimeAsync(proposedRoot.Value, cancellationToken);
 
                     int? plexYear = plexMatchData.Year;
                     int? mappedYear = mappedMedia?.StartDate?.Year;
@@ -387,7 +387,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             // Fetch from AniList if we have AniList ID
             if (rootAniListId.HasValue)
             {
-                aniListData ??= await _apiService.GetAniListAnimeAsync(rootAniListId.Value);
+                aniListData ??= await _apiService.GetAniListAnimeAsync(rootAniListId.Value, cancellationToken);
             }
 
             // Prefer MAL ID from AniList root if available (avoids OVA mappings)
@@ -399,13 +399,13 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             // Fetch from Jikan using effective MAL ID
             if (effectiveMalId.HasValue)
             {
-                jikanData = await _apiService.GetJikanAnimeAsync(effectiveMalId.Value);
+                jikanData = await _apiService.GetJikanAnimeAsync(effectiveMalId.Value, cancellationToken);
             }
 
             _logger.LogInformation("=== SERVICE COMPLETED CALL #{CallId} ===", callId);
 
             // Create combined metadata
-            return await CreateCombinedMetadata(plexMatchData, mapping, jikanData, aniListData, rootAniListId, effectiveMalId, config, info.MetadataLanguage);
+            return await CreateCombinedMetadata(plexMatchData, mapping, jikanData, aniListData, rootAniListId, effectiveMalId, config, info.MetadataLanguage, cancellationToken);
         }
 
         private AnimeMapping? ResolveMappingFromProviderIds(SeriesInfo info)
@@ -483,7 +483,8 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             long? rootAniListId,
             long? effectiveMalId,
             Configuration.PluginConfiguration config,
-            string? metadataLanguage)
+            string? metadataLanguage,
+            CancellationToken cancellationToken = default)
         {
             // Prefer root AniList media when mapping points at a sequel/spin-off stage.
             AniListMedia? aniListPrimary = aniListData;
@@ -491,7 +492,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             var mappedIsPinned = mappedAniListId.HasValue && _keepAniListMappingIds.Contains(mappedAniListId.Value);
             if (rootAniListId.HasValue && aniListData?.Id != rootAniListId.Value && !mappedIsPinned)
             {
-                var rootMedia = await _apiService.GetAniListAnimeAsync(rootAniListId.Value);
+                var rootMedia = await _apiService.GetAniListAnimeAsync(rootAniListId.Value, cancellationToken);
                 if (rootMedia != null)
                 {
                     var plexYear = plexMatchData.Year;
@@ -501,9 +502,9 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                     var useRoot = true;
                     if (plexYear.HasValue && mappedYear.HasValue && rootYear.HasValue)
                     {
-                        var targetYear = plexYear.Value;
-                        var diffMapped = Math.Abs(mappedYear.Value - targetYear);
-                        var diffRoot = Math.Abs(rootYear.Value - targetYear);
+                        var targetYear = plexYear.GetValueOrDefault();
+                        var diffMapped = Math.Abs(mappedYear.GetValueOrDefault() - targetYear);
+                        var diffRoot = Math.Abs(rootYear.GetValueOrDefault() - targetYear);
                         useRoot = diffRoot <= diffMapped;
                     }
 
@@ -548,7 +549,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             }
 
             // Apply configuration for Title and OriginalTitle selection
-            metadata.Title = await GetConfiguredTitle(primaryJikan, aniListPrimary, config, metadataLanguage, mapping.anidb_id, rootAniListId, plexMatchData.Title);
+            metadata.Title = await GetConfiguredTitle(primaryJikan, aniListPrimary, config, metadataLanguage, mapping.anidb_id, rootAniListId, plexMatchData.Title, cancellationToken);
             metadata.OriginalTitle = GetConfiguredOriginalTitle(primaryJikan, aniListPrimary, config);
 
             // Status from Jikan, falling back to AniList's own status when Jikan has nothing usable
@@ -568,7 +569,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             // ever corrects a false "Ended", never overrides a genuinely correct one.
             if (metadata.Status == "Ended" && rootAniListId.HasValue)
             {
-                var latestSeasonDetail = await _apiService.GetLatestSeasonDetailAsync((int)rootAniListId.Value);
+                var latestSeasonDetail = await _apiService.GetLatestSeasonDetailAsync((int)rootAniListId.Value, cancellationToken);
                 var latestStatus = _apiService.MapAniListStatus(latestSeasonDetail?.Status);
                 if (latestStatus == "Continuing")
                 {
@@ -613,10 +614,15 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 try
                 {
                     metadata.People = await _apiService.GetPeopleAsync(
-                        rootAniListId ?? 0, 
-                        mapping.mal_id ?? 0
+                        rootAniListId ?? 0,
+                        mapping.mal_id ?? 0,
+                        cancellationToken
                     );
                     _logger.LogDebug("Fetched {Count} people for {Title}", metadata.People?.Count ?? 0, metadata.Title);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
                 }
                 catch (Exception ex)
                 {
@@ -642,7 +648,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             // Fetch tags from AniDB if enabled and we have an AniDB ID
             if (config.EnableAniDbTags)
             {
-                metadata.Tags = await GetAggregatedAniDbTagsAsync(mapping, metadata.Seasons, config);
+                metadata.Tags = await GetAggregatedAniDbTagsAsync(mapping, metadata.Seasons, config, cancellationToken);
             }
             else
             {
@@ -658,7 +664,8 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
         private async Task<List<string>> GetAggregatedAniDbTagsAsync(
             AnimeMapping mapping,
             List<SeasonRelation>? seasons,
-            Configuration.PluginConfiguration config)
+            Configuration.PluginConfiguration config,
+            CancellationToken cancellationToken = default)
         {
             var tagBuckets = new List<string>();
             var seenIds = new HashSet<long>();
@@ -693,11 +700,16 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                         id,
                         config.AniDbClientName,
                         config.AniDbClientVersion,
-                        config.AniDbRateLimit);
+                        config.AniDbRateLimit,
+                        cancellationToken);
                     if (tags?.Count > 0)
                     {
                         tagBuckets.AddRange(tags);
                     }
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
                 }
                 catch (Exception ex)
                 {
@@ -710,7 +722,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             return filtered;
         }
 
-        private async Task<long?> FindBestPrequelRootAsync(long startAniListId, int targetYear)
+        private async Task<long?> FindBestPrequelRootAsync(long startAniListId, int targetYear, CancellationToken cancellationToken = default)
         {
             var visited = new HashSet<long>();
             var queue = new Queue<long>();
@@ -727,7 +739,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                     continue;
                 }
 
-                var media = await _apiService.GetAniListAnimeAsync(currentId);
+                var media = await _apiService.GetAniListAnimeAsync(currentId, cancellationToken);
                 if (media == null)
                 {
                     continue;
@@ -790,7 +802,8 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             string? metadataLanguage,
             long? aniDbId,
             long? aniListId,
-            string? fallbackTitle)
+            string? fallbackTitle,
+            CancellationToken cancellationToken = default)
         {
             var languageField = TitleFieldFromLanguage(metadataLanguage);
 
@@ -833,11 +846,15 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 try
                 {
                     var aniDbTitle = await _apiService.GetAniDbMainTitleAsync(
-                        aniDbId.Value, config.AniDbClientName, config.AniDbClientVersion, config.AniDbRateLimit);
+                        aniDbId.Value, config.AniDbClientName, config.AniDbClientVersion, config.AniDbRateLimit, cancellationToken);
                     if (!string.IsNullOrWhiteSpace(aniDbTitle))
                     {
                         return aniDbTitle;
                     }
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
                 }
                 catch (Exception ex)
                 {

@@ -241,7 +241,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 return null;
             }
 
-            var anime = await _apiService.GetAniListAnimeAsync(aniListId);
+            var anime = await _apiService.GetAniListAnimeAsync(aniListId, cancellationToken);
             var url = anime?.CoverImage?.Large;
             if (string.IsNullOrWhiteSpace(url))
             {

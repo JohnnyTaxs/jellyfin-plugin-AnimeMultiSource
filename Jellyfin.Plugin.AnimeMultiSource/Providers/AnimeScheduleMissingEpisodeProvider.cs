@@ -102,7 +102,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
                     try
                     {
-                        await _updater.RefreshSeriesAsync(series).ConfigureAwait(false);
+                        await _updater.RefreshSeriesAsync(series, cancellationToken).ConfigureAwait(false);
                     }
                     catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                     {

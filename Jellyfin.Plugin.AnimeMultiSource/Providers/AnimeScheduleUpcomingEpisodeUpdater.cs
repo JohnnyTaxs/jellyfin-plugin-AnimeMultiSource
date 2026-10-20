@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
@@ -33,6 +34,11 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
         // refresh leaks sockets and defeats connection pooling.
         private static readonly HttpClient Http = CreateHttpClient();
 
+        // A series can be refreshed by the post-refresh queue and the scheduled task at the same
+        // time. Serialize per series id so neither run duplicates virtual episodes or races the
+        // other's season writes. The dictionary is bounded by the library's series count.
+        private static readonly ConcurrentDictionary<Guid, SemaphoreSlim> SeriesGates = new();
+
         private readonly ILibraryManager _libraryManager;
         private readonly ILocalizationManager _localization;
         private readonly ILogger _logger;
@@ -58,7 +64,26 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             _logger = logger;
         }
 
-        public async Task RefreshSeriesAsync(Series series)
+        public async Task RefreshSeriesAsync(Series series, CancellationToken cancellationToken = default)
+        {
+            var gate = SeriesGates.GetOrAdd(series.Id, _ => new SemaphoreSlim(1, 1));
+            if (!await gate.WaitAsync(0, cancellationToken).ConfigureAwait(false))
+            {
+                _logger.LogDebug("AnimeSchedule: refresh already in progress for {Series}; skipping duplicate run", series.Name);
+                return;
+            }
+
+            try
+            {
+                await RefreshSeriesCoreAsync(series, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                gate.Release();
+            }
+        }
+
+        private async Task RefreshSeriesCoreAsync(Series series, CancellationToken cancellationToken)
         {
             var config = Plugin.GetConfigurationSafe(_logger);
             if (ItemExclusion.IsExcluded(series, config))
@@ -120,12 +145,12 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 // here risks attaching an unrelated side-story/spin-off's own schedule to this show as
                 // a fake next season, confirmed as the cause of wrong season numbers and duplicate TBA
                 // entries for shows with such relations in 1.0.6.7). The underlying AniList data is
-                // cached 5 days regardless of outcome, so repeatedly asking is cheap even for a
+                // cached 30 days regardless of outcome, so repeatedly asking is cheap even for a
                 // franchise on a multi-year hiatus between seasons (Devil Is a Part-Timer: 2013 ->
                 // 2022). Deliberately not gated on Series.Status == Ended: that field is TVDB-sourced
                 // and often wrong for anime (the reason this plugin exists in the first place), and
                 // was itself observed causing a currently-airing show to be skipped entirely.
-                var currentSeasonDetail = await apiService.GetAniListSeasonDetailAsync((int)currentAniListId);
+                var currentSeasonDetail = await apiService.GetAniListSeasonDetailAsync((int)currentAniListId, cancellationToken: cancellationToken);
                 var confirmedNextAniListId = currentSeasonDetail?.SequelAniListId;
 
                 if (confirmedNextAniListId.HasValue &&
@@ -135,6 +160,10 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 }
 
                 _logger.LogInformation("AnimeSchedule: no upcoming timetable entries found for {Series} across all candidate AniList ids", series.Name);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception ex)
             {

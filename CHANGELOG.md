@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.0.4 - 2026-10-20
+- TMDB now accepts a v4 Read Access Token (starts with `eyJ`) and sends it as an `Authorization: Bearer` header; existing v3 API keys still use the query string.
+- AniList media/season/root caches are capped at 5,000 entries and people at 20,000, with the same caps applied when restoring the persistent cache; AniDB is capped at 5,000. The AniList cache lifetime is now 30 days, and the weekly tag-refresh task also trims the caches.
+- Fribb mappings are parsed record by record, so one malformed row no longer rejects the whole list. A download with fewer than 1,000 usable mappings, or less than half the previous count, is rejected so a truncated response cannot replace a good mapping set.
+- Cancellation now flows through AniDB and AniList requests (including rate-limit waits and response reads) from series/season metadata, artwork, and AnimeSchedule refreshes.
+- AnimeSchedule upcoming-episode refreshes are gated per series, so the post-refresh queue and the scheduled task cannot process the same series concurrently; the second run skips instead of duplicating virtual episodes.
+
 ## 1.1.0.3 - 2026-10-20
 - Fixed episode stills for seasons after the first: season-specific MAL/Kitsu IDs are resolved instead of the season 1 root ID, and TVDB episode-image failures now fall through to Jikan/MAL, Kitsu, and TMDB.
 - Manual Identify now works for series without a `.plexmatch`: selected AniList, MAL, Kitsu, or TMDB IDs resolve to the matching series and season metadata.
