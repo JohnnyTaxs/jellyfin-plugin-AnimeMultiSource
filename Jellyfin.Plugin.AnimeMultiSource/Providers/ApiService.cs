@@ -928,7 +928,19 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 _logger.LogError(ex, "Error fetching people data for AniList {AniListId}, MAL {MalId}", anilistId, malId);
             }
 
+            // People images are later fetched by Jellyfin core, outside this plugin's proxy, so
+            // sanitize cached and freshly parsed values before handing them back.
+            foreach (var person in people)
+            {
+                person.ImageUrl = SafeImageUrl(person.ImageUrl);
+            }
+
             return people;
+        }
+
+        private static string? SafeImageUrl(string? url)
+        {
+            return ImageUrlValidator.IsAllowed(url) ? url : null;
         }
 
         private async Task<List<PersonInfo>> GetAniListPeopleAsync(long anilistId)
@@ -1055,7 +1067,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                             {
                                 Name = va.Name?.Full ?? "Unknown VA",
                                 Role = $"Voice - {characterEdge.Node.Name?.Full}",
-                                ImageUrl = va.Image?.Large
+                                ImageUrl = SafeImageUrl(va.Image?.Large)
                             });
                         }
                     }
@@ -1072,7 +1084,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                         {
                             Name = staffEdge.Node.Name?.Full ?? "Unknown Staff",
                             Role = staffEdge.Role ?? "Staff",
-                            ImageUrl = staffEdge.Node.Image?.Large
+                            ImageUrl = SafeImageUrl(staffEdge.Node.Image?.Large)
                         });
                     }
                 }
@@ -1102,7 +1114,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                                 Name = va.Person?.Name ?? "Unknown VA",
                                 Role = $"Voice - {character.Character.Name}",
                                 // Keep this compatible with the current Jellyfin PersonInfo model.
-                                ImageUrl = va.Person?.Images?.WebP?.ImageUrl
+                                ImageUrl = SafeImageUrl(va.Person?.Images?.WebP?.ImageUrl)
                             });
                         }
                     }

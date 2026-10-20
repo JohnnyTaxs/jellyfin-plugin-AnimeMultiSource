@@ -1,15 +1,17 @@
 ---
-name: "AnimeMultiSource"
+name: "Anime Multi Source"
 guid: "8eca6f17-71fe-4309-a670-3cae083f22bd"
 version: "1.1.0.2"
 targetAbi: "12.0.0.0"
 framework: "net10.0"
-overview: "Anime metadata, artwork, and episode images for Jellyfin 12"
+overview: "Anime metadata, tags, art, and people pulled from multiple sources with rate limiting and persistent caches."
 description: >
   Anime metadata, artwork, and episode images from multiple sources including AniList, AniDB, MAL/Jikan, TVDB, Kitsu, TMDB, Fanart.tv, Fribb, and .plexmatch.
-category: "Metadata"
+category: "Anime"
 owner: "JohnnyTaxs"
 artifacts:
 - "Jellyfin.Plugin.AnimeMultiSource.dll"
+- "plugin.json"
+- "meta.json"
 changelog: >
   Merges upstream v1.1.0.0 fixes and features, keeps the fork's episode-image and search improvements, and hardens Jikan handling and release packaging.

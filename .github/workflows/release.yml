@@ -34,19 +34,10 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-nuget-
 
-      - name: Verify tag and version consistency
-        shell: bash
-        run: |
-          set -euo pipefail
-          tag_version="${GITHUB_REF_NAME#v}"
-          props_version=$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' Directory.Build.props | head -1)
-          build_version=$(sed -n 's/^version: "\(.*\)"/\1/p' build.yaml | head -1)
-          plugin_version=$(jq -r .version Jellyfin.Plugin.AnimeMultiSource/plugin.json)
-          if [[ -z "$props_version" || "$tag_version" != "$props_version" || "$tag_version" != "$build_version" || "$tag_version" != "$plugin_version" ]]; then
-            echo "::error::Tag '$tag_version' must match Directory.Build.props='$props_version' build.yaml='$build_version' plugin.json='$plugin_version'"
-            exit 1
-          fi
-          echo "Releasing $tag_version"
+      - name: Verify tag and metadata consistency
+        env:
+          TAG_VERSION: ${{ github.ref_name }}
+        run: bash .github/scripts/validate-metadata.sh
 
       - name: Restore dependencies
         run: dotnet restore jellyfin-plugin-AnimeMultiSource.sln
@@ -57,11 +48,14 @@ jobs:
       - name: Publish package
         run: dotnet publish Jellyfin.Plugin.AnimeMultiSource/Jellyfin.Plugin.AnimeMultiSource.csproj -c Release --no-restore -o publish
 
+      - name: Generate package metadata
+        run: bash .github/scripts/create-meta-json.sh
+
       - name: Validate package contents
         shell: bash
         run: |
           set -euo pipefail
-          for required in "publish/Jellyfin.Plugin.AnimeMultiSource.dll" "publish/plugin.json"; do
+          for required in "publish/Jellyfin.Plugin.AnimeMultiSource.dll" "publish/plugin.json" "publish/meta.json"; do
             if [[ ! -f "$required" ]]; then
               echo "::error::Package is missing $required"
               exit 1
@@ -96,23 +90,7 @@ jobs:
           echo "checksum=$checksum" >> "$GITHUB_OUTPUT"
           echo "::notice::AnimeMultiSource_v${version}.zip MD5 $checksum"
 
-      - name: Create or update GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          version="${{ steps.package.outputs.version }}"
-          asset="AnimeMultiSource_v${version}.zip"
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" "$asset" --clobber
-          else
-            gh release create "$GITHUB_REF_NAME" "$asset" \
-              --title "Anime Multi Source ${version}" \
-              --generate-notes
-          fi
-
-      - name: Prepend release to plugin manifest
+      - name: Prepare manifest entry
         shell: bash
         run: |
           set -euo pipefail
@@ -122,12 +100,68 @@ jobs:
           changelog_url="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${GITHUB_REF_NAME}"
           timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           target_abi=$(sed -n 's/^targetAbi: "\(.*\)"/\1/p' build.yaml | head -1)
-          default_branch="${{ github.event.repository.default_branch }}"
 
           if [[ -z "$target_abi" ]]; then
             echo "::error::Could not read targetAbi from build.yaml"
             exit 1
           fi
+
+          jq -n \
+            --arg version "$version" \
+            --arg changelog "$changelog_url" \
+            --arg targetAbi "$target_abi" \
+            --arg sourceUrl "$source_url" \
+            --arg checksum "$checksum" \
+            --arg timestamp "$timestamp" \
+            '{version: $version, changelog: $changelog, targetAbi: $targetAbi, sourceUrl: $sourceUrl, checksum: $checksum, timestamp: $timestamp}' \
+            > manifest-entry.json
+
+          jq -e '
+            (.version | type == "string" and length > 0)
+            and (.targetAbi | type == "string" and length > 0)
+            and (.sourceUrl | type == "string" and startswith("https://"))
+            and (.changelog | type == "string" and startswith("https://"))
+            and (.checksum | type == "string" and test("^[0-9A-F]{32}$"))
+            and (.timestamp | type == "string" and length > 0)
+          ' manifest-entry.json >/dev/null
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ steps.package.outputs.version }}"
+          asset="AnimeMultiSource_v${version}.zip"
+
+          # A version is immutable: never clobber a published asset or replace its manifest entry.
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "::error::Release $GITHUB_REF_NAME already exists. Bump the plugin version and tag a new commit."
+            exit 1
+          fi
+
+          notes_file="$RUNNER_TEMP/release-notes.md"
+          awk -v version="$version" '
+            BEGIN { target = "## " version }
+            index($0, target) == 1 { capture = 1; next }
+            capture && /^## / { exit }
+            capture { print }
+          ' CHANGELOG.md > "$notes_file"
+
+          if [[ ! -s "$notes_file" ]]; then
+            echo "::error::CHANGELOG.md has no section for $version"
+            exit 1
+          fi
+
+          gh release create "$GITHUB_REF_NAME" "$asset" \
+            --title "Anime Multi Source ${version}" \
+            --notes-file "$notes_file"
+
+      - name: Prepend release to plugin manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          default_branch="${{ github.event.repository.default_branch }}"
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -137,22 +171,12 @@ jobs:
             git fetch origin "$default_branch"
             git switch -C "$default_branch" "origin/$default_branch"
 
-            jq --arg version "$version" \
-               --arg changelog_url "$changelog_url" \
-               --arg source_url "$source_url" \
-               --arg checksum "$checksum" \
-               --arg timestamp "$timestamp" \
-               --arg target_abi "$target_abi" \
-               '.[0].versions = ([{
-                  version: $version,
-                  changelog: $changelog_url,
-                  targetAbi: $target_abi,
-                  sourceUrl: $source_url,
-                  checksum: $checksum,
-                  timestamp: $timestamp
-                }] + (.[0].versions | map(select(.version != $version))))' \
+            jq --slurpfile entry manifest-entry.json \
+               '.[0].versions = ([$entry[0]] + (.[0].versions | map(select(.version != $entry[0].version))))' \
                manifest.json > manifest.json.tmp
             mv manifest.json.tmp manifest.json
+
+            REQUIRE_MANIFEST_VERSION=1 TAG_VERSION="$GITHUB_REF_NAME" bash .github/scripts/validate-metadata.sh
 
             git add manifest.json
             if git diff --cached --quiet; then

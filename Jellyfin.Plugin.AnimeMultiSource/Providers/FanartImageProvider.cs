@@ -104,7 +104,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             {
                 _logger.LogInformation("Missing TVDB id for {Name}; trying AniList artwork", item.Name);
                 var aniListImage = await GetAniListImageAsync(item, cancellationToken);
-                return aniListImage == null ? Array.Empty<RemoteImageInfo>() : new[] { aniListImage };
+                return aniListImage == null ? Array.Empty<RemoteImageInfo>() : ImageUrlValidator.Filter(new[] { aniListImage });
             }
 
             var seasonNumber = item is Season season ? season.IndexNumber : null;
@@ -230,7 +230,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 }
             }
 
-            return images;
+            return ImageUrlValidator.Filter(images);
         }
 
         private async Task<RemoteImageInfo?> GetAniListImageAsync(BaseItem item, CancellationToken cancellationToken)

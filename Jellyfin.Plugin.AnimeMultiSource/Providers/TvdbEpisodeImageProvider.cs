@@ -108,7 +108,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             if (imageUrl != null)
             {
                 _logger.LogInformation("Returning TVDB episode image for {Name}: {Url}", episode.Name, imageUrl);
-                return new[]
+                return ImageUrlValidator.Filter(new[]
                 {
                     new RemoteImageInfo
                     {
@@ -116,7 +116,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                         Url = imageUrl,
                         Type = ImageType.Primary
                     }
-                };
+                });
             }
 
             _logger.LogInformation("TVDB has no image for episode {EpisodeId}; trying Jikan/MAL", episodeId);
@@ -125,21 +125,21 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
         private async Task<IEnumerable<RemoteImageInfo>> GetFallbackImagesAsync(Episode episode, CancellationToken cancellationToken)
         {
-            var jikanImages = await GetJikanImageAsync(episode, cancellationToken);
+            var jikanImages = ImageUrlValidator.Filter(await GetJikanImageAsync(episode, cancellationToken));
             if (jikanImages.Any())
             {
                 return jikanImages;
             }
 
             _logger.LogInformation("Jikan has no usable image for {Name}; trying Kitsu", episode.Name);
-            var kitsuImages = await GetKitsuImageAsync(episode, cancellationToken);
+            var kitsuImages = ImageUrlValidator.Filter(await GetKitsuImageAsync(episode, cancellationToken));
             if (kitsuImages.Any())
             {
                 return kitsuImages;
             }
 
             _logger.LogInformation("Kitsu has no usable image for {Name}; trying TMDB", episode.Name);
-            return await GetTmdbImageAsync(episode, cancellationToken);
+            return ImageUrlValidator.Filter(await GetTmdbImageAsync(episode, cancellationToken));
         }
 
         private async Task<IEnumerable<RemoteImageInfo>> GetJikanImageAsync(Episode episode, CancellationToken cancellationToken)

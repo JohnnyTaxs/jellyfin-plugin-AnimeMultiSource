@@ -146,24 +146,27 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             }
 
             var value = image.Trim();
+            string? normalized;
             if (value.StartsWith("//", StringComparison.Ordinal))
             {
-                return $"https:{value}";
+                normalized = $"https:{value}";
             }
-
-            if (Uri.TryCreate(value, UriKind.Absolute, out var absoluteUri))
+            else if (Uri.TryCreate(value, UriKind.Absolute, out var absoluteUri))
             {
-                return absoluteUri.Scheme == Uri.UriSchemeHttp || absoluteUri.Scheme == Uri.UriSchemeHttps
+                normalized = absoluteUri.Scheme == Uri.UriSchemeHttp || absoluteUri.Scheme == Uri.UriSchemeHttps
                     ? absoluteUri.ToString()
                     : null;
             }
-
-            if (value.StartsWith("/", StringComparison.Ordinal))
+            else if (value.StartsWith("/", StringComparison.Ordinal))
             {
-                return $"https://artworks.thetvdb.com{value}";
+                normalized = $"https://artworks.thetvdb.com{value}";
+            }
+            else
+            {
+                normalized = $"https://artworks.thetvdb.com/{value.TrimStart('/')}";
             }
 
-            return $"https://artworks.thetvdb.com/{value.TrimStart('/')}";
+            return ImageUrlValidator.IsAllowed(normalized) ? normalized : null;
         }
 
         public async Task<TvdbTranslation?> GetEpisodeTranslationAsync(int episodeId, string language, CancellationToken cancellationToken)

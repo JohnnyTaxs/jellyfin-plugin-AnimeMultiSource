@@ -8,6 +8,12 @@
     <NoWarn>1591</NoWarn>
   </PropertyGroup>
 
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <!-- Keep build paths and debug symbols out of the shipped package. -->
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
   <ItemGroup>
         <!-- Jellyfin provides these assemblies at runtime. Bundling copies would break interface
           discovery because the plugin's IHasWebPages type would come from a second assembly. -->

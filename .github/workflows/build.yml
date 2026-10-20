@@ -29,18 +29,8 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-nuget-
 
-      - name: Verify version consistency
-        shell: bash
-        run: |
-          set -euo pipefail
-          version=$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' Directory.Build.props | head -1)
-          build_version=$(sed -n 's/^version: "\(.*\)"/\1/p' build.yaml | head -1)
-          plugin_version=$(jq -r .version Jellyfin.Plugin.AnimeMultiSource/plugin.json)
-          if [[ -z "$version" || "$version" != "$build_version" || "$version" != "$plugin_version" ]]; then
-            echo "::error::Version mismatch: Directory.Build.props='$version' build.yaml='$build_version' plugin.json='$plugin_version'"
-            exit 1
-          fi
-          echo "Version $version"
+      - name: Verify version and metadata consistency
+        run: bash .github/scripts/validate-metadata.sh
 
       - name: Restore dependencies
         run: dotnet restore jellyfin-plugin-AnimeMultiSource.sln
@@ -51,11 +41,14 @@ jobs:
       - name: Publish package
         run: dotnet publish Jellyfin.Plugin.AnimeMultiSource/Jellyfin.Plugin.AnimeMultiSource.csproj -c Release --no-restore -o publish
 
+      - name: Generate package metadata
+        run: bash .github/scripts/create-meta-json.sh
+
       - name: Validate package contents
         shell: bash
         run: |
           set -euo pipefail
-          for required in "publish/Jellyfin.Plugin.AnimeMultiSource.dll" "publish/plugin.json"; do
+          for required in "publish/Jellyfin.Plugin.AnimeMultiSource.dll" "publish/plugin.json" "publish/meta.json"; do
             if [[ ! -f "$required" ]]; then
               echo "::error::Package is missing $required"
               exit 1

@@ -1,6 +1,9 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using MediaBrowser.Model.Providers;
 
 namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 {
@@ -19,6 +22,11 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             "tmdb.org",
             "fanart.tv"
         };
+
+        public static IEnumerable<RemoteImageInfo> Filter(IEnumerable<RemoteImageInfo> images)
+        {
+            return images.Where(image => IsAllowed(image.Url));
+        }
 
         public static bool IsAllowed(string? url)
         {

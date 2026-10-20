@@ -226,7 +226,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 {
                     Name = title,
                     ProductionYear = anime.StartDate?.Year,
-                    ImageUrl = anime.CoverImage?.Large,
+                    ImageUrl = ImageUrlValidator.IsAllowed(anime.CoverImage?.Large) ? anime.CoverImage?.Large : null,
                     SearchProviderName = Name,
                     ProviderIds = new Dictionary<string, string>()
                 };

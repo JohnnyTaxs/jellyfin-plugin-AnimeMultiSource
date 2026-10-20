@@ -99,9 +99,9 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 var json = await response.Content.ReadAsStringAsync(cancellationToken);
                 var data = JsonSerializer.Deserialize<JikanEpisodeResponse>(json)?.Data;
                 var imageUrl = data?.Images?.WebP?.ImageUrl ?? data?.Images?.Jpg?.ImageUrl;
-                if (string.IsNullOrWhiteSpace(imageUrl))
+                if (string.IsNullOrWhiteSpace(imageUrl) || !ImageUrlValidator.IsAllowed(imageUrl))
                 {
-                    _logger.LogDebug("Jikan has no image for MAL {MalId} episode {EpisodeNumber}", malId, episode.IndexNumber);
+                    _logger.LogDebug("Jikan has no usable image for MAL {MalId} episode {EpisodeNumber}", malId, episode.IndexNumber);
                     return Array.Empty<RemoteImageInfo>();
                 }
 
