@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.1.0.5 - 2026-10-26
+- **Anime movies.** New movie metadata provider (title, overview, genres, people, studios, ratings, runtime, provider ids), AniDB tags through the same tag filter as series, and movie images from Fanart.tv (posters, backdrops, logos, clear art, banners, thumbs, discs) with the AniList cover/banner as a fallback.
+- **Identification without a `.plexmatch`** (movies and series) through the anime-lists API. A `.plexmatch` and ids already on the item still win; when there is no clear match the item is left unidentified and the closest candidates are logged. The API is **opt-in**: new setting "Use the anime-lists API", off by default, and nothing is sent until it is ticked (the settings page says exactly what is sent).
+- **Identify button** for movies and series: lists shows (one row per show, not per season) and accepts a typed AniList, MAL, TVDB or TMDb id.
+- **Series layout follows the API** (when enabled): fixes the Dragon Ball family (Z, Super, Kai, GT, Daima) getting another show's data; seasons split out of one long entry are filled by TVDB.
+- Show, season and episode cards fill their gaps: release/end dates, runtime, per-season original title, parental rating, genres, studios, people and AniDB tags, and episode parental rating.
+- Parental rating fallback when Jikan is down or has none: Kitsu, then an otherwise-ignored Jikan entry.
+- **Updating through the plugin catalog no longer wipes your settings.** Jellyfin installs the new version beside the old one and loads both ([jellyfin/jellyfin#12959](https://github.com/jellyfin/jellyfin/issues/12959)), which reset the settings file to defaults. The plugin now reads and saves its own settings through its own serializer, keeps a backup, restores the file if an older copy resets it, and deletes stale version folders 90 seconds after startup (the old clean-up never matched Jellyfin's `Anime Multi Source_<version>` folder names).
+- Fixed cast failing to save ("UNIQUE constraint failed: Peoples.Id"), which left some seasons with no cast.
+- Fixed the season provider crashing for virtual seasons of unidentified series.
+- Fixed AniDB's empty "no tags yet" answers sticking for 5 days (now re-asked after 6 hours).
+- Fixed AniList 429s on movie lookups (waits and retries), and no hollow record is written when neither AniList nor Jikan answers.
+- Series TVDB/IMDb ids now fall back to the mapping when `.plexmatch` doesn't carry them.
+
 ## 1.1.0.0 - 2026-10-18
 - **Jellyfin 12 support.** Now built for Jellyfin 12 (`net10.0`, Jellyfin 12.2.0 packages, ABI 12.0.0.0), matching how the official plugins moved. This build does not install on Jellyfin 10.11; the 1.0.7.x line continues to support 10.11. Thanks to @doogalbeez (#19).
 - Fixed a crash on Fribb TMDb movie ids: Fribb now stores them as arrays (`{"movie": [372058]}`), which made metadata fail for any title whose mapping only had a movie id. A bare number, a numeric string and an array are all accepted now.
