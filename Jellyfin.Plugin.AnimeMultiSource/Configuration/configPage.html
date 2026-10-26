@@ -21,6 +21,20 @@
                 font: inherit;
                 resize: vertical;
             }
+
+            #AnimeMultiSourceConfigurationPage .animeMultiSourceNote {
+                display: block;
+                width: 100%;
+                max-width: none;
+                box-sizing: border-box;
+                margin: 0 0 .75em 0;
+                column-count: 1;
+                white-space: normal;
+                word-break: normal;
+                overflow-wrap: break-word;
+                line-height: 1.5;
+                opacity: .85;
+            }
         </style>
         <div data-role="content">
             <div class="content-primary">
@@ -181,6 +195,19 @@
                         <div class="fieldDescription">Skips metadata, artwork, upcoming episodes, and automatic tag refreshes for each folder and its contents. Existing data is kept. Remove a path to resume updates.</div>
                     </div>
 
+                    <h2>Anime-lists API (optional)</h2>
+                    <div class="checkboxContainer">
+                        <label>
+                            <input id="useAnimeListsApi" name="useAnimeListsApi" type="checkbox" is="emby-checkbox" />
+                            <span>Use the anime-lists API</span>
+                        </label>
+                    </div>
+                    <div class="animeMultiSourceNote" style="display:block;width:100%">
+                        <p class="animeMultiSourceNote">Off by default. Until you tick the box above, the plugin sends nothing to this API. A .plexmatch file is always used first and works without it.</p>
+                        <p class="animeMultiSourceNote">When on: movies and series without a .plexmatch file are identified through the API, the Identify button searches it, movies get their AniDB tags and Fanart.tv artwork from the ids it supplies, and series follow the season layout it gives (so a show that TVDB splits into sagas, like Dragon Ball, keeps that layout). If a title could be two different anime, it is left unidentified and logged instead of guessed.</p>
+                        <p class="animeMultiSourceNote"><strong>What is sent:</strong> the folder name and year of each movie or series being identified, plus anime ids (AniList, MAL, TVDB, TMDb) to look up their details. The server is run by the plugin author. Its logs hold only the searched title and how the request went; they contain no IP address, device id or token.</p>
+                    </div>
+
                     <div>
                         <button is="emby-button" type="submit" class="raised button-submit block emby-button">
                             <span>Save</span>
@@ -225,6 +252,7 @@
                     ApiClient.getPluginConfiguration(AnimeMultiSourceConfigurationPage.pluginUniqueId).then(function (config) {
                         // Title settings
                         document.getElementById('excludedPaths').value = config.ExcludedPaths || '';
+                        document.getElementById('useAnimeListsApi').checked = config.UseAnimeListsApi === true;
                         document.getElementById('titleField').value = config.TitleField || 'Title';
                         document.getElementById('titleDataSource').value = config.TitleDataSource || 'AniDB';
 
@@ -268,6 +296,7 @@
                         // Title settings
                         config.TitleField = document.getElementById('titleField').value;
                         config.ExcludedPaths = document.getElementById('excludedPaths').value;
+                        config.UseAnimeListsApi = document.getElementById('useAnimeListsApi').checked;
                         config.TitleDataSource = document.getElementById('titleDataSource').value;
 
                         config.OriginalTitleField = document.getElementById('originalTitleField').value;

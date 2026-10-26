@@ -67,6 +67,10 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
         private readonly ApiService _apiService;
         private readonly TagFilterService _tagFilterService;
         private readonly System.Net.Http.HttpClient _httpClient;
+        private readonly MovieIdentifier _movieIdentifier;
+        private readonly SeriesIdentifier _seriesIdentifier;
+        private readonly EntryDetailsLoader _entryDetails;
+        private readonly AnimeListsApiClient _animeListsApiClient;
         private static readonly HashSet<long> _keepAniListMappingIds = new()
         {
             // Known cases where the sequel/spin-off must not be realigned to a different root
@@ -129,32 +133,230 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             _httpClient = httpClient;
             _animeListMapper = new AnimeListMapper(httpClient, logger);
             _apiService = new ApiService(httpClient, logger);
+            _animeListsApiClient = new AnimeListsApiClient(httpClient, logger);
+            _movieIdentifier = new MovieIdentifier(logger, _apiService, _animeListsApiClient, _plexMatchParser);
+            _seriesIdentifier = new SeriesIdentifier(logger, _apiService, _animeListsApiClient);
+            _entryDetails = new EntryDetailsLoader(_apiService, logger);
+        }
+
+        public MovieIdentifier MovieIdentifier => _movieIdentifier;
+
+        public SeriesIdentifier SeriesIdentifier => _seriesIdentifier;
+
+        /// <summary>
+        /// Identifies an anime movie (see <see cref="MovieIdentifier"/>) and builds its metadata from AniList, Jikan and
+        /// AniDB. Returns null when the movie cannot be identified with confidence.
+        /// </summary>
+        public async Task<AnimeMetadata?> GetMetadataForMovie(MovieInfo info, Configuration.PluginConfiguration config, CancellationToken cancellationToken)
+        {
+            var match = await _movieIdentifier.IdentifyAsync(info, config, cancellationToken);
+            if (match == null)
+            {
+                return null;
+            }
+
+            AniListMovieMedia? aniList = match.AniListId.HasValue
+                ? await _apiService.GetAniListMovieMediaAsync(match.AniListId.Value)
+                : null;
+
+            // Films that AniList lists as one combined entry (e.g. the two Re:ZERO OVAs) still have their own MAL id,
+            // so the MAL id from the match wins over AniList's idMal to keep their metadata apart.
+            var malId = match.MalId ?? (aniList?.IdMal is int idMal ? idMal : (long?)null);
+            var jikan = malId.HasValue ? await _apiService.GetJikanAnimeAsync(malId.Value) : null;
+            var primaryJikan = ShouldUseJikanForMovie(jikan) ? jikan : null;
+            if (jikan != null && primaryJikan == null)
+            {
+                _logger.LogWarning("Ignoring Jikan metadata for movie '{Name}': MAL {MalId} is a '{Type}'", info.Name, malId, jikan.Type);
+            }
+
+            // With neither source answering (AniList rate limited, Jikan down) all that is left would be a hollow record
+            // with a fallback title. Leave the movie alone instead; the next refresh tries again.
+            if (aniList == null && primaryJikan == null)
+            {
+                _logger.LogWarning("No AniList or Jikan data for movie '{Name}' (AniList {AniListId}, MAL {MalId}); not writing metadata this time",
+                    info.Name, match.AniListId, malId);
+                return null;
+            }
+
+            var aniDbId = match.AniDbId;
+            var (queryTitle, queryYear) = MovieIdentifier.ParseNameAndYear(info.Name, info.Year);
+
+            // An AniList entry that covers several films (the Re:ZERO OVAs) names the whole set, not this film.
+            var sharedEntry = aniList?.IdMal is int aniListMal && malId.HasValue && aniListMal != malId.Value;
+
+            var metadata = new AnimeMetadata
+            {
+                AniDbId = aniDbId?.ToString(),
+                AniListId = match.AniListId?.ToString(),
+                MalId = malId?.ToString(),
+                KitsuId = match.KitsuId?.ToString(),
+                AniSearchId = match.AniSearchId?.ToString(),
+                // All of these ids come from the anime-lists API, which keeps a film's own TMDb id (themoviedb_id) apart
+                // from its parent show's (themoviedb_series_id). The two id spaces overlap: for Bodacious Space Pirates the
+                // film is 239366 and the show 42501 is an unrelated 1971 film.
+                TheMovieDbId = match.TmdbId?.ToString(),
+                // Several films can share one IMDb id (Initial D Legend 1-3), so MovieIdentifier only passes on an unambiguous one.
+                ImdbId = match.ImdbId,
+                Type = aniList?.Format ?? primaryJikan?.Type
+            };
+
+            if (sharedEntry && primaryJikan == null)
+            {
+                var own = config.TitleField == Configuration.TitleFieldType.TitleEnglish ? match.EnglishTitle ?? match.Title : match.Title;
+                metadata.Title = !string.IsNullOrWhiteSpace(own) ? own : queryTitle;
+                metadata.OriginalTitle = string.Empty;
+            }
+            else
+            {
+                var titleSource = sharedEntry ? null : aniList;
+                metadata.Title = await GetConfiguredTitle(primaryJikan, titleSource, config, info.MetadataLanguage, aniDbId, match.AniListId, queryTitle);
+                metadata.OriginalTitle = GetConfiguredOriginalTitle(primaryJikan, titleSource, config);
+            }
+
+            metadata.CommunityRating = primaryJikan?.Score ?? (aniList?.AverageScore / 10.0);
+            metadata.Overview = primaryJikan?.Synopsis ?? (aniList?.Description != null ? StripAnimeScheduleHtml(aniList.Description) : null);
+            metadata.ReleaseDate = primaryJikan?.Aired?.From ?? ToDate(aniList?.StartDate);
+            metadata.EndDate = primaryJikan?.Aired?.To ?? ToDate(aniList?.EndDate);
+            metadata.Year = metadata.ReleaseDate?.Year ?? aniList?.StartDate?.Year ?? queryYear;
+            metadata.Runtime = GetConfiguredRuntime(primaryJikan, aniList, config);
+            metadata.ParentalRating = ChooseParentalRating(primaryJikan?.Rating)
+                ?? await _apiService.GetKitsuParentalRatingAsync(match.KitsuId);
+            metadata.Genres = _apiService.CombineGenres(primaryJikan, aniList, GetApprovedGenres(config));
+            metadata.Studios = _apiService.GetStudios(jikan);
+
+            try
+            {
+                metadata.People = match.AniListId.HasValue || malId.HasValue
+                    ? await _apiService.GetPeopleAsync(match.AniListId ?? 0, malId ?? 0)
+                    : new List<PersonInfo>();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error fetching people for movie '{Name}'", info.Name);
+                metadata.People = new List<PersonInfo>();
+            }
+
+            // AniDB models some film series as one entry (Initial D Legend 1-3 share AniDB 9987); they share its tags.
+            metadata.Tags = config.EnableAniDbTags && aniDbId.HasValue
+                ? await GetAniDbTagsForMovieAsync(aniDbId.Value, config)
+                : new List<string>();
+
+            _logger.LogInformation(
+                "Populated movie '{Title}' ({Year}): {GenreCount} genres, {StudioCount} studios, {PeopleCount} people, {TagCount} tags",
+                metadata.Title, metadata.Year, metadata.Genres?.Count ?? 0, metadata.Studios?.Count ?? 0, metadata.People?.Count ?? 0, metadata.Tags?.Count ?? 0);
+
+            return metadata;
+        }
+
+        private async Task<List<string>> GetAniDbTagsForMovieAsync(long aniDbId, Configuration.PluginConfiguration config)
+        {
+            try
+            {
+                var tags = await _apiService.GetAniDbTagsAsync(aniDbId, config.AniDbClientName, config.AniDbClientVersion, config.AniDbRateLimit);
+                if (tags == null || tags.Count == 0)
+                {
+                    return new List<string>();
+                }
+
+                var filtered = _tagFilterService.FilterTags(tags);
+                _tagFilterService.LogFilteredTags(_logger, tags, filtered);
+                return filtered;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error fetching AniDB tags for AniDB id {AniDbId}", aniDbId);
+                return new List<string>();
+            }
+        }
+
+        // Jikan sends null (or an empty string) for titles MAL has not rated yet.
+        private static string? ChooseParentalRating(string? rating) =>
+            string.IsNullOrWhiteSpace(rating) ? null : rating.Trim();
+
+        private static bool ShouldUseJikanForMovie(JikanAnime? jikan)
+        {
+            if (jikan == null)
+            {
+                return false;
+            }
+
+            // A film must not take its metadata from a TV series entry (a wrong MAL mapping would otherwise leak in).
+            return string.IsNullOrWhiteSpace(jikan.Type)
+                || !jikan.Type.StartsWith("TV", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static DateTime? ToDate(AniListDate? date) => EntryDetailsLoader.ToDate(date);
+
+        /// <summary>
+        /// The end date of the show's latest season - the date of its last episode. <c>Known</c> is false when the latest
+        /// season could not be determined; <c>End</c> is null when it is known but still airing.
+        /// </summary>
+        private async Task<(bool Known, DateTime? End)> GetLatestSeasonEndAsync(Configuration.PluginConfiguration config, long? rootAniListId, CancellationToken cancellationToken)
+        {
+            if (!rootAniListId.HasValue || rootAniListId.Value > int.MaxValue)
+            {
+                return (false, null);
+            }
+
+            try
+            {
+                ApiService.AniListSeasonDetail? latest = null;
+
+                // The API's latest season (the way TVDB/TMDb count them) - AniList's sequel chain can wander into another series.
+                if (!string.IsNullOrWhiteSpace(config.EffectiveAnimeListsApiUrl))
+                {
+                    var franchise = await _animeListsApiClient.GetFranchiseAsync(config.EffectiveAnimeListsApiUrl, rootAniListId.Value, cancellationToken);
+                    if (franchise?.LatestSeasonEntry?.AniListId is long latestId && latestId <= int.MaxValue)
+                    {
+                        latest = await _apiService.GetAniListSeasonDetailAsync((int)latestId);
+                    }
+                }
+
+                latest ??= await _apiService.GetLatestSeasonDetailAsync((int)rootAniListId.Value);
+                return latest == null ? (false, null) : (true, latest.EndDate);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "Could not determine the end date of the latest season for AniList {AniListId}", rootAniListId);
+                return (false, null);
+            }
         }
 
         private static int _serviceCallCount = 0;
 
-        public async Task<AnimeMetadata?> GetMetadataForSeries(SeriesInfo info, Configuration.PluginConfiguration config)
+        public async Task<AnimeMetadata?> GetMetadataForSeries(SeriesInfo info, Configuration.PluginConfiguration config, CancellationToken cancellationToken = default)
         {
             var callId = Interlocked.Increment(ref _serviceCallCount);
             _logger.LogInformation("=== SERVICE CALL #{CallId} for: {Name} ===", callId, info.Name);
-            
+
             var seriesPath = info.Path;
 
-            // Look for .plexmatch file
+            // A .plexmatch file is always the first choice. Without one the series is identified from its folder name
+            // (an id it already has, the anime-lists API, then AniList), and the result is fed into the same flow as a
+            // .plexmatch that only carries an anilistid/malid.
             var plexMatchPath = Path.Combine(seriesPath, Constants.PlexMatchFileName);
-            if (!File.Exists(plexMatchPath))
+            PlexMatchData plexMatchData;
+            if (File.Exists(plexMatchPath))
             {
-                _logger.LogWarning("***********************");
-                _logger.LogWarning("* no plexmatch file  *");
-                _logger.LogWarning("***********************");
-                return null;
+                _logger.LogInformation("Found .plexmatch file at {PlexMatchPath}", plexMatchPath);
+
+                // Parse .plexmatch file
+                var plexMatchContent = await File.ReadAllTextAsync(plexMatchPath);
+                plexMatchData = _plexMatchParser.ParsePlexMatch(plexMatchContent);
             }
+            else
+            {
+                var anchor = await _seriesIdentifier.IdentifyAsync(info, config, cancellationToken);
+                if (anchor == null)
+                {
+                    _logger.LogWarning("Series '{Name}' has no .plexmatch file and could not be identified from its name; skipping", info.Name);
+                    return null;
+                }
 
-            _logger.LogInformation("Found .plexmatch file at {PlexMatchPath}", plexMatchPath);
-
-            // Parse .plexmatch file
-            var plexMatchContent = await File.ReadAllTextAsync(plexMatchPath);
-            var plexMatchData = _plexMatchParser.ParsePlexMatch(plexMatchContent);
+                _logger.LogInformation("No .plexmatch for '{Name}'; identified via {Method} (AniList {AniListId}, MAL {MalId})",
+                    info.Name, anchor.Method, anchor.AniListId, anchor.MalId);
+                plexMatchData = new PlexMatchData { Title = anchor.Title, Year = anchor.Year, AniListId = anchor.AniListId, MalId = anchor.MalId };
+            }
 
             _logger.LogInformation("Parsed .plexmatch data - Title: {Title}, Year: {Year}, TVDB: {TvdbId}, IMDb: {ImdbId}",
                 plexMatchData.Title, plexMatchData.Year, plexMatchData.TvdbId, plexMatchData.ImdbId);
@@ -248,7 +450,32 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 var mappedAniListIdValue = mapping.anilist_id!.Value;
                 aniListData = await _apiService.GetAniListAnimeAsync(mappedAniListIdValue);
 
-                var keepMapping = _keepAniListMappingIds.Contains(mappedAniListIdValue);
+                // The anime-lists API knows the series the way TVDB and TMDb do, so its first season is the root - whatever
+                // AniList's PREQUEL links say (there Dragon Ball Z is a sequel of Dragon Ball and Dragon Ball Super a
+                // sequel of Dragon Ball Kai). When the API has an answer neither the PREQUEL walk nor the pinned-id list is needed.
+                long? franchiseRoot = null;
+                if (!string.IsNullOrWhiteSpace(config.EffectiveAnimeListsApiUrl))
+                {
+                    var franchise = await _animeListsApiClient.GetFranchiseAsync(config.EffectiveAnimeListsApiUrl, mappedAniListIdValue, cancellationToken);
+                    franchiseRoot = franchise?.FirstSeasonAniListId;
+                }
+
+                var keepMapping = _keepAniListMappingIds.Contains(mappedAniListIdValue) || franchiseRoot.HasValue;
+
+                if (franchiseRoot.HasValue && franchiseRoot.Value != mappedAniListIdValue)
+                {
+                    _logger.LogInformation("Using the first season of the TVDB/TMDb series, AniList {RootId}, instead of mapped AniList {MappedId} for '{Title}' (from the anime-lists API)",
+                        franchiseRoot, mappedAniListIdValue, plexMatchData.Title);
+                    rootAniListId = franchiseRoot;
+                    aniListData = await _apiService.GetAniListAnimeAsync(franchiseRoot.Value) ?? aniListData;
+
+                    var franchiseMapping = _animeListMapper.GetMappingByAniListId(franchiseRoot.Value);
+                    if (franchiseMapping != null && franchiseMapping.TvdbId.HasValue && mapping.TvdbId.HasValue &&
+                        franchiseMapping.TvdbId.Value == mapping.TvdbId.Value)
+                    {
+                        mapping = franchiseMapping;
+                    }
+                }
 
                 // If the mapped AniList entry is a sequel (e.g., Initial D Fourth Stage),
                 // try walking PREQUEL links to find the closest year match for the plexmatch year.
@@ -335,7 +562,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 }
                 else
                 {
-                    rootAniListId = mapping.anilist_id;
+                    rootAniListId = franchiseRoot ?? mapping.anilist_id;
                 }
             }
 
@@ -360,7 +587,8 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             _logger.LogInformation("=== SERVICE COMPLETED CALL #{CallId} ===", callId);
 
             // Create combined metadata
-            return await CreateCombinedMetadata(plexMatchData, mapping, jikanData, aniListData, rootAniListId, effectiveMalId, config, info.MetadataLanguage);
+            var latestSeasonEnd = await GetLatestSeasonEndAsync(config, rootAniListId, cancellationToken);
+            return await CreateCombinedMetadata(plexMatchData, mapping, jikanData, aniListData, rootAniListId, effectiveMalId, config, info.MetadataLanguage, latestSeasonEnd);
         }
 
         private async Task<AnimeMetadata> CreateCombinedMetadata(
@@ -371,7 +599,8 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             long? rootAniListId,
             long? effectiveMalId,
             Configuration.PluginConfiguration config,
-            string? metadataLanguage)
+            string? metadataLanguage,
+            (bool Known, DateTime? End) latestSeasonEnd = default)
         {
             // Prefer root AniList media when mapping points at a sequel/spin-off stage.
             AniListMedia? aniListPrimary = aniListData;
@@ -408,9 +637,10 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 Title = plexMatchData.Title,
                 Year = plexMatchData.Year,
 
-                // Provider IDs from .plexmatch
-                TvdbId = plexMatchData.TvdbId,
-                ImdbId = plexMatchData.ImdbId,
+                // Provider IDs from .plexmatch; when it carries only an anilistid/malid (or there is no .plexmatch at all),
+                // the mapping's ids fill the gap - the season and episode providers need the series' TVDB id.
+                TvdbId = !string.IsNullOrEmpty(plexMatchData.TvdbId) ? plexMatchData.TvdbId : mapping.TvdbId?.ToString(),
+                ImdbId = !string.IsNullOrEmpty(plexMatchData.ImdbId) ? plexMatchData.ImdbId : (mapping.imdb_id?.Length == 1 ? mapping.imdb_id[0] : null),
 
                 // Provider IDs from mapping
                 AniDbId = mapping.anidb_id?.ToString(),
@@ -473,15 +703,24 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 }
             }
 
-            // Dates from Jikan
-            metadata.ReleaseDate = primaryJikan?.Aired?.From;
-            metadata.EndDate = primaryJikan?.Aired?.To;
+            // Release date: the first episode of the first season (Jikan, AniList when Jikan is out of reach).
+            // End date: the last episode of the LATEST season - not the first season's end. While the latest season is
+            // still airing there is no end date. If the latest season could not be determined at all, fall back to the
+            // first season's end rather than leave it blank.
+            metadata.ReleaseDate = primaryJikan?.Aired?.From ?? ToDate(aniListPrimary?.StartDate);
+            metadata.EndDate = latestSeasonEnd.Known
+                ? latestSeasonEnd.End
+                : primaryJikan?.Aired?.To ?? ToDate(aniListPrimary?.EndDate);
+            metadata.Year ??= metadata.ReleaseDate?.Year;
 
             // Runtime based on configuration
             metadata.Runtime = GetConfiguredRuntime(primaryJikan, aniListData, config);
 
-            // Parental Rating from Jikan
-            metadata.ParentalRating = primaryJikan?.Rating;
+            // Parental Rating: Jikan first; Kitsu when Jikan is down, paused or has no rating; and as a last resort the
+            // rating of a Jikan entry we otherwise ignore (e.g. an ONA mapped to a TV season - same franchise, same rating).
+            metadata.ParentalRating = ChooseParentalRating(primaryJikan?.Rating)
+                ?? await _apiService.GetKitsuParentalRatingAsync(mapping.kitsu_id)
+                ?? ChooseParentalRating(jikanData?.Rating);
 
             // Genres - combined from Jikan and AniList, filtered by approved list
             var approvedGenres = GetApprovedGenres(config);
@@ -770,40 +1009,9 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 ?? string.Empty;
         }
 
-        private int? GetConfiguredRuntime(JikanAnime? jikanData, AniListMedia? aniListData, Configuration.PluginConfiguration config)
-        {
-            if (config.RuntimeDataSource == Configuration.RuntimeDataSourceType.Anilist)
-            {
-                // Prefer AniList duration
-                if (aniListData?.Duration.HasValue == true)
-                    return aniListData.Duration;
-            }
-
-            // Fallback to Jikan
-            var runtimeStr = _apiService.ParseJikanDuration(jikanData?.Duration);
-            if (int.TryParse(runtimeStr, out int runtime))
-            {
-                return runtime;
-            }
-
-            // If preferred source failed, try the other
-            if (config.RuntimeDataSource == Configuration.RuntimeDataSourceType.Jikan)
-            {
-                // We already tried Jikan, return null
-                return null;
-            }
-            else
-            {
-                // Try Jikan as fallback
-                runtimeStr = _apiService.ParseJikanDuration(jikanData?.Duration);
-                if (int.TryParse(runtimeStr, out runtime))
-                {
-                    return runtime;
-                }
-            }
-
-            return null;
-        }
+        // Minutes per episode: the source the settings prefer (Jikan's duration or AniList's), the other as a fallback.
+        private int? GetConfiguredRuntime(JikanAnime? jikanData, AniListMedia? aniListData, Configuration.PluginConfiguration config) =>
+            _entryDetails.PickRuntime(jikanData, aniListData, config.RuntimeDataSource);
 
         private List<string> GetApprovedGenres(Configuration.PluginConfiguration config)
         {

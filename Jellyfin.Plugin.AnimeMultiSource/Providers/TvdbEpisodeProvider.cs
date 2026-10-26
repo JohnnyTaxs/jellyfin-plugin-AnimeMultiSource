@@ -17,6 +17,8 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
     {
         private readonly ILogger<TvdbEpisodeProvider> _logger;
         private readonly TvdbApiClient _tvdbClient;
+        private readonly SeasonEntryResolver _seasonEntryResolver;
+        private readonly EntryDetailsLoader _entryDetails;
 
         public TvdbEpisodeProvider(ILogger<TvdbEpisodeProvider> logger)
         {
@@ -30,6 +32,12 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             httpClient.DefaultRequestHeaders.Add("User-Agent", "Jellyfin-AnimeMultiSource-Plugin/1.0");
 
             _tvdbClient = new TvdbApiClient(httpClient, logger, Constants.TvdbProjectApiKey);
+
+            // The anime APIs get their own client: ApiService adds its own User-Agent header to the one it is given.
+            var animeHttpClient = new HttpClient(new HttpClientHandler { AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate });
+            var apiService = new ApiService(animeHttpClient, logger);
+            _seasonEntryResolver = new SeasonEntryResolver(new AnimeListsApiClient(animeHttpClient, logger), apiService);
+            _entryDetails = new EntryDetailsLoader(apiService, logger);
         }
 
         public string Name => $"{Constants.PluginName} TVDB Episodes";
@@ -88,6 +96,9 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             episode.ProviderIds ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             episode.SetProviderId(MetadataProvider.Tvdb, tvdbEpisode.Id.ToString());
 
+            // Parental rating: Jikan, from the anime entry this episode's season belongs to.
+            episode.OfficialRating = await GetSeasonRatingAsync(info, cancellationToken);
+
             result.Item = episode;
             result.HasMetadata = true;
 
@@ -102,6 +113,37 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             _logger.LogInformation("TVDB episode metadata set for series {SeriesId} S{Season}E{Episode} - {Title}", tvdbSeriesId, episode.ParentIndexNumber, episode.IndexNumber, episode.Name);
 
             return result;
+        }
+
+        // The rating of the anime entry the episode's season belongs to (Maria Holic season 2 = "Maria Holic Alive"), from
+        // Jikan with Kitsu as the fallback. An episode in season 0, or one the API cannot place, takes the series' own entry.
+        private async Task<string?> GetSeasonRatingAsync(EpisodeInfo info, CancellationToken cancellationToken)
+        {
+            try
+            {
+                if (info.SeriesProviderIds == null
+                    || !info.SeriesProviderIds.TryGetValue(Constants.AniListProviderId, out var seriesAniList)
+                    || !long.TryParse(seriesAniList, out var seriesId))
+                {
+                    return null;
+                }
+
+                var config = Plugin.GetConfigurationSafe(_logger);
+                var entry = info.ParentIndexNumber is int season
+                    ? await _seasonEntryResolver.ResolveAsync(config.EffectiveAnimeListsApiUrl, seriesId, season, cancellationToken)
+                    : null;
+
+                // Specials (season 0) and seasons the API cannot place take the first season's entry: it has the Kitsu id
+                // that keeps the rating available while Jikan is down.
+                entry ??= await _seasonEntryResolver.ResolveAsync(config.EffectiveAnimeListsApiUrl, seriesId, 1, cancellationToken);
+
+                return await _entryDetails.GetParentalRatingAsync(entry?.AniListId ?? seriesId, entry?.MalId, entry?.KitsuId);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "Could not determine the parental rating for {Name}", info.Name);
+                return null;
+            }
         }
 
         public Task<IEnumerable<RemoteSearchResult>> GetSearchResults(EpisodeInfo searchInfo, CancellationToken cancellationToken)

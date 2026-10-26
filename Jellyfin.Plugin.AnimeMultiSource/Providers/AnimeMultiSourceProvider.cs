@@ -52,7 +52,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
             try
             {
-                var metadata = await _animeService.GetMetadataForSeries(info, config);
+                var metadata = await _animeService.GetMetadataForSeries(info, config, cancellationToken);
                 if (metadata == null)
                 {
                     _logger.LogDebug("No metadata found for {Path}", info.Path);
@@ -204,9 +204,22 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 series.ProviderIds.Count, metadata.Title, string.Join(", ", series.ProviderIds.Keys));
         }
 
-        public Task<IEnumerable<RemoteSearchResult>> GetSearchResults(SeriesInfo searchInfo, CancellationToken cancellationToken)
+        /// <summary>Feeds the "Identify" dialog; choosing a result stores its AniList/MAL id, which the next refresh then honours.</summary>
+        public async Task<IEnumerable<RemoteSearchResult>> GetSearchResults(SeriesInfo searchInfo, CancellationToken cancellationToken)
         {
-            return Task.FromResult<IEnumerable<RemoteSearchResult>>(new List<RemoteSearchResult>());
+            try
+            {
+                return await _animeService.SeriesIdentifier.SearchAsync(searchInfo, Plugin.GetConfigurationSafe(_logger), cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error searching for series '{Name}'", searchInfo.Name);
+                return new List<RemoteSearchResult>();
+            }
         }
 
         public Task<HttpResponseMessage> GetImageResponse(string url, CancellationToken cancellationToken)
