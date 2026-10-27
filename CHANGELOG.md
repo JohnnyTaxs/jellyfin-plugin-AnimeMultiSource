@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.0.1 - 2026-10-27
+- Movie artwork now goes through the image-host allowlist: AniList cover/banner and Fanart.tv movie URLs are filtered before they are returned, and AniList movie images download through the validating client.
+- The Kitsu parental-rating fallback and the per-episode rating lookup now honor cancellation, and a cancelled request no longer counts as a Kitsu failure.
+
 ## 1.2.0.0 - 2026-10-27
 - Merged upstream 1.1.0.5. Anime movies now have metadata from AniList/Jikan and images from Fanart.tv with the AniList cover/banner as fallback.
 - Identification without a `.plexmatch` through the opt-in anime-lists API, plus an Identify button on series and movie pages that accepts AniList, MAL, TVDB, or TMDB ids. Off by default; a `.plexmatch` and ids already on the item still win.

@@ -131,7 +131,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             var wanted = ParseLanguages(_config.FanartLanguages);
             foreach (var image in source)
             {
-                if (string.IsNullOrWhiteSpace(image.Url))
+                if (!ImageUrlValidator.IsAllowed(image.Url))
                 {
                     continue;
                 }

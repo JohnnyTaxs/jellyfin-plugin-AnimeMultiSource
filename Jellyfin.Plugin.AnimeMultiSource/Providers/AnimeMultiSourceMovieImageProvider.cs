@@ -66,14 +66,14 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             }
 
             var cover = media.CoverImage?.ExtraLarge ?? media.CoverImage?.Large;
-            if (!string.IsNullOrWhiteSpace(cover))
+            if (ImageUrlValidator.IsAllowed(cover))
             {
-                images.Add(new RemoteImageInfo { ProviderName = Name, Url = cover, Type = ImageType.Primary });
+                images.Add(new RemoteImageInfo { ProviderName = Name, Url = cover!, Type = ImageType.Primary });
             }
 
-            if (!string.IsNullOrWhiteSpace(media.BannerImage))
+            if (ImageUrlValidator.IsAllowed(media.BannerImage))
             {
-                images.Add(new RemoteImageInfo { ProviderName = Name, Url = media.BannerImage, Type = ImageType.Backdrop });
+                images.Add(new RemoteImageInfo { ProviderName = Name, Url = media.BannerImage!, Type = ImageType.Backdrop });
             }
 
             return images;
@@ -81,7 +81,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
         public Task<HttpResponseMessage> GetImageResponse(string url, CancellationToken cancellationToken)
         {
-            return _httpClient.GetAsync(url, cancellationToken);
+            return ImageHttpClient.GetAsync(url, cancellationToken);
         }
     }
 }

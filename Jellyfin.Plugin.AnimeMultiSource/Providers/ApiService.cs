@@ -139,7 +139,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
         private static int _kitsuConsecutiveFailures;
         private static DateTimeOffset _kitsuPausedUntil = DateTimeOffset.MinValue;
 
-        public async Task<string?> GetKitsuParentalRatingAsync(long? kitsuId)
+        public async Task<string?> GetKitsuParentalRatingAsync(long? kitsuId, CancellationToken cancellationToken = default)
         {
             if (kitsuId is not > 0)
             {
@@ -163,7 +163,8 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             {
                 using var request = new HttpRequestMessage(HttpMethod.Get, $"https://kitsu.app/api/edge/anime/{kitsuId}?fields%5Banime%5D=ageRating,ageRatingGuide");
                 request.Headers.Accept.ParseAdd("application/vnd.api+json");
-                using var timeout = new System.Threading.CancellationTokenSource(KitsuRequestTimeout);
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                timeout.CancelAfter(KitsuRequestTimeout);
                 using var response = await _httpClient.SendAsync(request, timeout.Token);
 
                 if (response.StatusCode == HttpStatusCode.NotFound)
@@ -179,7 +180,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                     return null;
                 }
 
-                using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+                using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(timeout.Token));
                 string? ageRating = null, guide = null;
                 if (document.RootElement.TryGetProperty("data", out var data)
                     && data.TryGetProperty("attributes", out var attributes))
@@ -192,6 +193,10 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 var rating = KitsuAgeRating.ToJikanStyle(ageRating, guide);
                 _kitsuRatingCache[kitsuId.Value] = (DateTimeOffset.UtcNow, rating);
                 return rating;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception ex) when (ex is TaskCanceledException or HttpRequestException or JsonException)
             {

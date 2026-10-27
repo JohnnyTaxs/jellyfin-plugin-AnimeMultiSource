@@ -173,7 +173,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 // that keeps the rating available while Jikan is down.
                 entry ??= await _seasonEntryResolver.ResolveAsync(config.EffectiveAnimeListsApiUrl, seriesId, 1, cancellationToken);
 
-                return await _entryDetails.GetParentalRatingAsync(entry?.AniListId ?? seriesId, entry?.MalId, entry?.KitsuId);
+                return await _entryDetails.GetParentalRatingAsync(entry?.AniListId ?? seriesId, entry?.MalId, entry?.KitsuId, cancellationToken);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {

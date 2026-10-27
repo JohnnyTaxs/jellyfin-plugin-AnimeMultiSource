@@ -206,7 +206,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
             // Only ask Kitsu when Jikan did not give a rating.
             var kitsuRating = CleanRating(jikan?.Rating) == null
-                ? await _apiService.GetKitsuParentalRatingAsync(kitsuId).ConfigureAwait(false)
+                ? await _apiService.GetKitsuParentalRatingAsync(kitsuId, cancellationToken).ConfigureAwait(false)
                 : null;
 
             var details = Build(jikan, aniList, kitsuRating, config);
@@ -251,7 +251,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             }
 
             var jikan = mal.HasValue ? await _apiService.GetJikanAnimeAsync(mal.Value, cancellationToken).ConfigureAwait(false) : null;
-            var rating = CleanRating(jikan?.Rating) ?? CleanRating(await _apiService.GetKitsuParentalRatingAsync(kitsuId).ConfigureAwait(false));
+            var rating = CleanRating(jikan?.Rating) ?? CleanRating(await _apiService.GetKitsuParentalRatingAsync(kitsuId, cancellationToken).ConfigureAwait(false));
 
             RatingCache[key] = (DateTimeOffset.UtcNow, rating);
             return rating;
