@@ -76,6 +76,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
         public async Task<IEnumerable<RemoteImageInfo>> GetImages(BaseItem item, CancellationToken cancellationToken)
         {
+
             // Jellyfin keeps provider instances for the server lifetime; refresh settings here so
             // saved config changes take effect without a restart.
             _config = Plugin.GetConfigurationSafe(_logger);

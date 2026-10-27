@@ -209,10 +209,32 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 series.ProviderIds.Count, metadata.Title, string.Join(", ", series.ProviderIds.Keys));
         }
 
+        /// <summary>Feeds the "Identify" dialog; choosing a result stores its AniList/MAL id, which the next refresh then honours.</summary>
         public async Task<IEnumerable<RemoteSearchResult>> GetSearchResults(SeriesInfo searchInfo, CancellationToken cancellationToken)
         {
-            var media = await _apiService.SearchAniListAnimeAsync(searchInfo.Name, cancellationToken);
             var results = new List<RemoteSearchResult>();
+
+            // The anime-lists API knows how TVDB/TMDb split a franchise into shows. It is opt-in, so when it is off (or
+            // answers nothing) fall back to Jellyfin's own search over AniList, then Jikan/MAL and Kitsu.
+            try
+            {
+                results.AddRange(await _animeService.SeriesIdentifier.SearchAsync(searchInfo, Plugin.GetConfigurationSafe(_logger), cancellationToken));
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "anime-lists search failed for '{Name}'; using AniList search", searchInfo.Name);
+            }
+
+            if (results.Count > 0)
+            {
+                return results;
+            }
+
+            var media = await _apiService.SearchAniListAnimeAsync(searchInfo.Name, cancellationToken);
 
             foreach (var anime in media)
             {

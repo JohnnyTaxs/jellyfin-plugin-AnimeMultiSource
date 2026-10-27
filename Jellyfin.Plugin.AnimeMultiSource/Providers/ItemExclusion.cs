@@ -40,8 +40,11 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                     continue;
                 }
 
-                // Windows and macOS default filesystems are case-insensitive; Linux is not.
-                var comparison = OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
+                // Windows drive and UNC paths are case-insensitive, and so are the default macOS
+                // volumes; plain Unix paths are case-sensitive.
+                var comparison = excludedPath.StartsWith("//", StringComparison.Ordinal)
+                    || (excludedPath.Length > 1 && excludedPath[1] == ':')
+                    || OperatingSystem.IsMacOS()
                     ? StringComparison.OrdinalIgnoreCase
                     : StringComparison.Ordinal;
                 if (normalizedPath.Equals(excludedPath, comparison)

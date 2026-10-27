@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.0.0 - 2026-10-27
+- Merged upstream 1.1.0.5. Anime movies now have metadata from AniList/Jikan and images from Fanart.tv with the AniList cover/banner as fallback.
+- Identification without a `.plexmatch` through the opt-in anime-lists API, plus an Identify button on series and movie pages that accepts AniList, MAL, TVDB, or TMDB ids. Off by default; a `.plexmatch` and ids already on the item still win.
+- Series layout follows the API when enabled (Dragon Ball family, seasons split out of one long entry), and show/season/episode cards fill missing dates, runtime, original title, parental rating, genres, studios, people, and AniDB tags.
+- Parental rating now falls back from Jikan to Kitsu.
+- Settings survive catalog updates: the plugin reads and writes its own settings file, keeps a backup, and deletes stale version folders after startup.
+- Upstream fixes: cast saving no longer fails on `UNIQUE constraint failed: Peoples.Id`, the season provider no longer crashes for virtual seasons of unidentified series, AniDB's empty tag answers are re-asked after 6 hours, AniList 429s on movie lookups are retried, and series TVDB/IMDb ids fall back to the mapping.
+- Fork work kept: the TVDB → Jikan/MAL → Kitsu → TMDB episode-still chain with the standalone Jikan provider, TMDB v3 key or v4 Bearer token and `.plexmatch` `tmdbid`, AniList → Jikan/MAL → Kitsu Identify fallbacks without the API, 30-day bounded caches, per-record Fribb parsing with truncation guards, cancellation, image-host allowlisting, per-series AnimeSchedule gating, and release validation.
+
 ## 1.1.0.4 - 2026-10-20
 - TMDB now accepts a v4 Read Access Token (starts with `eyJ`) and sends it as an `Authorization: Bearer` header; existing v3 API keys still use the query string.
 - AniList media/season/root caches are capped at 5,000 entries and people at 20,000, with the same caps applied when restoring the persistent cache; AniDB is capped at 5,000. The AniList cache lifetime is now 30 days, and the weekly tag-refresh task also trims the caches.

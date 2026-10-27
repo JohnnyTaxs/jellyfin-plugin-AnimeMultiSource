@@ -42,6 +42,45 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
         public List<FanartSeasonImage> SeasonThumbs { get; set; } = new();
     }
 
+    public class FanartMovieResponse
+    {
+        [JsonPropertyName("name")]
+        public string? Name { get; set; }
+
+        [JsonPropertyName("tmdb_id")]
+        public string? TmdbId { get; set; }
+
+        [JsonPropertyName("imdb_id")]
+        public string? ImdbId { get; set; }
+
+        [JsonPropertyName("movieposter")]
+        public List<FanartImage> MoviePosters { get; set; } = new();
+
+        [JsonPropertyName("moviebackground")]
+        public List<FanartImage> MovieBackgrounds { get; set; } = new();
+
+        [JsonPropertyName("hdmovielogo")]
+        public List<FanartImage> HdMovieLogos { get; set; } = new();
+
+        [JsonPropertyName("movielogo")]
+        public List<FanartImage> MovieLogos { get; set; } = new();
+
+        [JsonPropertyName("hdmovieclearart")]
+        public List<FanartImage> HdMovieClearArt { get; set; } = new();
+
+        [JsonPropertyName("movieart")]
+        public List<FanartImage> MovieArt { get; set; } = new();
+
+        [JsonPropertyName("moviebanner")]
+        public List<FanartImage> MovieBanners { get; set; } = new();
+
+        [JsonPropertyName("moviethumb")]
+        public List<FanartImage> MovieThumbs { get; set; } = new();
+
+        [JsonPropertyName("moviedisc")]
+        public List<FanartImage> MovieDiscs { get; set; } = new();
+    }
+
     public class FanartImage
     {
         [JsonPropertyName("url")]

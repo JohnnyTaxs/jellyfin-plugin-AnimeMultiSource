@@ -56,6 +56,27 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Configuration
     {
         public string ExcludedPaths { get; set; } = string.Empty;
 
+        /// <summary>
+        /// Opt-in. The plugin only talks to the anime-lists API when the user has switched this on: the API is run by the plugin's
+        /// author, and using it sends folder names, years and anime ids to that server. Off by default.
+        /// </summary>
+        public bool UseAnimeListsApi { get; set; }
+
+        /// <summary>
+        /// Base URL of the anime-lists API (title search + id cross-references). Not shown in the settings page: users do not need
+        /// to change it, so it is always the author's server. It stays a stored value only so that someone hosting their own copy
+        /// can point the plugin at it by editing the settings XML. Only used when <see cref="UseAnimeListsApi"/> is on.
+        /// </summary>
+        public string AnimeListsApiUrl { get; set; } = Constants.DefaultAnimeListsApiUrl;
+
+        /// <summary>
+        /// The URL the providers use: the configured one when the user opted in, otherwise empty - which every provider treats
+        /// as "no API". Providers must read this, never <see cref="AnimeListsApiUrl"/>.
+        /// </summary>
+        [System.Xml.Serialization.XmlIgnore]
+        [System.Text.Json.Serialization.JsonIgnore]
+        public string EffectiveAnimeListsApiUrl => UseAnimeListsApi && !string.IsNullOrWhiteSpace(AnimeListsApiUrl) ? AnimeListsApiUrl.Trim() : string.Empty;
+
         public PluginConfiguration()
         {
             AniDbRateLimit = 2000;

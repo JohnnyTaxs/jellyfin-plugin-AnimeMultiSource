@@ -2,6 +2,7 @@
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <RootNamespace>Jellyfin.Plugin.AnimeMultiSource</RootNamespace>
+
     <!-- Version lives in Directory.Build.props so the build, package, and tag agree. -->
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <Nullable>enable</Nullable>
@@ -15,12 +16,12 @@
   </PropertyGroup>
 
   <ItemGroup>
-        <!-- Jellyfin provides these assemblies at runtime. Bundling copies would break interface
-          discovery because the plugin's IHasWebPages type would come from a second assembly. -->
-        <PackageReference Include="Jellyfin.Data" Version="12.0.0" ExcludeAssets="runtime" />
-        <PackageReference Include="Jellyfin.Controller" Version="12.0.0" ExcludeAssets="runtime" />
-        <PackageReference Include="Jellyfin.Common" Version="12.0.0" ExcludeAssets="runtime" />
-        <PackageReference Include="Jellyfin.Model" Version="12.0.0" ExcludeAssets="runtime" />
+    <!-- Jellyfin provides these assemblies at runtime. Bundling copies would break interface
+      discovery because the plugin's IHasWebPages type would come from a second assembly. -->
+    <PackageReference Include="Jellyfin.Data" Version="12.0.0" ExcludeAssets="runtime" />
+    <PackageReference Include="Jellyfin.Controller" Version="12.0.0" ExcludeAssets="runtime" />
+    <PackageReference Include="Jellyfin.Common" Version="12.0.0" ExcludeAssets="runtime" />
+    <PackageReference Include="Jellyfin.Model" Version="12.0.0" ExcludeAssets="runtime" />
     <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.11" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.11" />
   </ItemGroup>

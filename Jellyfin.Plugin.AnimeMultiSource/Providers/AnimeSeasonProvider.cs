@@ -25,6 +25,9 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
         private readonly ILogger<AnimeSeasonProvider> _logger;
         private readonly ApiService _apiService;
+        private readonly AnimeListsApiClient _animeListsApiClient;
+        private readonly SeasonEntryResolver _seasonEntryResolver;
+        private readonly EntryDetailsLoader _entryDetails;
         private readonly PlexMatchParser _plexMatchParser;
         private readonly AnimeListMapper _animeListMapper;
         private readonly TagFilterService _tagFilterService;
@@ -46,6 +49,9 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
             var httpClient = new HttpClient(httpClientHandler);
             _apiService = new ApiService(httpClient, logger);
+            _animeListsApiClient = new AnimeListsApiClient(httpClient, logger);
+            _seasonEntryResolver = new SeasonEntryResolver(_animeListsApiClient, _apiService);
+            _entryDetails = new EntryDetailsLoader(_apiService, logger);
             _plexMatchParser = new PlexMatchParser(logger);
             _animeListMapper = new AnimeListMapper(httpClient, logger);
             _tagFilterService = new TagFilterService();
@@ -87,8 +93,19 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 return result;
             }
 
-            // For certain series, defer later seasons to TVDB/other providers to avoid bad AniList chains.
-            if (baseAniListId.HasValue && AnimeMultiSourceService.ShouldDeferSeasonToTvdb(baseAniListId.Value, seasonNumber))
+            // The anime-lists API lays the series out the way TVDB/TMDb do. Follow it when it knows the season: the entry it
+            // names is the season (Maria Holic season 2 = "Maria Holic Alive"). A season it marks as inferred (one long
+            // entry split into several seasons, like the nine Dragon Ball Z sagas) shares the entry with its neighbours:
+            // it takes the entry's rating, genres, studios and people, but not its title, overview or ids. Only when the API
+            // has no answer is the season found by following AniList's sequel links.
+            var entry = seasonNumber >= 1
+                ? await _seasonEntryResolver.ResolveAsync(_config.EffectiveAnimeListsApiUrl, baseAniListId.Value, seasonNumber, cancellationToken)
+                : null;
+            var apiDecided = entry?.FromApi == true;
+
+            // For certain series (the Dragon Ball family), defer seasons to TVDB/other providers to avoid bad AniList chains.
+            // Only needed when the API did not name the season; with it the chain is not used at all.
+            if (!apiDecided && AnimeMultiSourceService.ShouldDeferSeasonToTvdb(baseAniListId.Value, seasonNumber))
             {
                 _logger.LogInformation("Skipping season metadata for {Name} S{SeasonNumber}: deferred to TVDB/other providers (override rule)", info.Name, seasonNumber);
                 return result;
@@ -96,7 +113,27 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
             _logger.LogInformation("Fetching season metadata for {Name} S{SeasonNumber} using AniList base ID {AniListId}", info.Name, seasonNumber, baseAniListId);
 
-            var seasonDetail = await _apiService.GetSeasonByNumberAsync(baseAniListId.Value, seasonNumber, cancellationToken);
+            ApiService.AniListSeasonDetail? seasonDetail = null;
+            if (seasonNumber == 0)
+            {
+                seasonDetail = await _apiService.GetSeasonByNumberAsync(baseAniListId.Value, seasonNumber, cancellationToken);
+            }
+            else if (entry?.OwnsEntry == true && entry.AniListId is long ownId && ownId <= int.MaxValue)
+            {
+                seasonDetail = await _apiService.GetAniListSeasonDetailAsync((int)ownId, cancellationToken: cancellationToken);
+            }
+            else if (entry != null)
+            {
+                _logger.LogInformation("Season {SeasonNumber} of {Name} shares its anime entry (AniList {AniListId}) with other seasons (inferred: {Inferred}); no own title, overview or ids",
+                    seasonNumber, info.Name, entry.AniListId, entry.Inferred);
+            }
+
+            // What the season card takes from its entry: rating, genres, studios, people, tags. A season that owns its entry
+            // uses it; a split season uses the shared entry; season 0 uses its own special entry.
+            var dataAniListId = seasonDetail?.AniListId ?? entry?.AniListId;
+            var dataMalId = seasonDetail?.MalId ?? entry?.MalId;
+            var details = await LoadEntryDetailsAsync(dataAniListId, dataMalId, entry?.KitsuId, cancellationToken);
+
             if (seasonDetail == null)
             {
                 if (_config.SeasonTitleFormat == SeasonTitleFormatType.Numbered)
@@ -107,14 +144,21 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                         "No season detail found for {Name} S{SeasonNumber} (AniList base {AniListId}); applying numbered fallback title",
                         info.Name, seasonNumber, baseAniListId);
 
+                    // The original title is the anime entry's name; a split season shares its entry, so it carries that name.
+                    var sharedTitle = details?.AniList?.Title?.English ?? details?.AniList?.Title?.Romaji ?? details?.AniList?.Title?.Native;
                     var fallbackSeason = new Season
                     {
                         Name = seasonNameFallback,
                         SortName = sortNameFallback,
                         ForcedSortName = sortNameFallback,
-                        OriginalTitle = seasonNameFallback,
+                        OriginalTitle = sharedTitle ?? seasonNameFallback,
                         IndexNumber = seasonNumber
                     };
+
+                    if (details != null)
+                    {
+                        await ApplyEntryDetailsAsync(fallbackSeason, result, details, dataAniListId, cancellationToken);
+                    }
 
                     result.Item = fallbackSeason;
                     result.HasMetadata = true;
@@ -171,6 +215,22 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 IndexNumber = seasonNumber
             };
 
+            if (seasonDetail.StartDate.HasValue)
+            {
+                season.PremiereDate = seasonDetail.StartDate.Value;
+                season.ProductionYear = seasonDetail.StartDate.Value.Year;
+            }
+
+            if (seasonDetail.EndDate.HasValue)
+            {
+                // Season does not expose a dedicated end date field in some Jellyfin versions; ignore if not supported.
+            }
+
+            if (seasonDetail.AverageScore.HasValue)
+            {
+                season.CommunityRating = (float)(seasonDetail.AverageScore.Value / 10.0);
+            }
+
             season.ProviderIds ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             if (seasonNumber != 0)
             {
@@ -200,17 +260,73 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 }
             }
 
-            // Season-level tags from AniDB via mapping
-            if (_config.EnableAniDbTags)
+            if (details != null)
             {
-                var seasonTags = await GetSeasonTagsAsync(seasonDetail.AniListId, cancellationToken);
-                season.Tags = seasonTags.ToArray();
+                await ApplyEntryDetailsAsync(season, result, details, seasonDetail.AniListId, cancellationToken);
+            }
+
+            // Jikan and AniList were both out of reach: AniList's genres from the season query are all there is.
+            if ((season.Genres == null || season.Genres.Length == 0) && seasonDetail.Genres?.Count > 0)
+            {
+                season.Genres = seasonDetail.Genres.ToArray();
             }
 
             result.Item = season;
             result.HasMetadata = true;
             _logger.LogInformation("Season metadata populated for {Name} S{SeasonNumber} with AniList ID {AniListId}", info.Name, seasonNumber, seasonDetail.AniListId);
             return result;
+        }
+
+        // Rating, genres, studios, people and tags of one anime entry: the same sources and rules as the show card (Jikan,
+        // AniList, Kitsu as the rating fallback, AniDB for tags), taken from the season's own entry.
+        private async Task<EntryDetails?> LoadEntryDetailsAsync(long? aniListId, long? malId, long? kitsuId, CancellationToken cancellationToken = default)
+        {
+            if (!aniListId.HasValue && !malId.HasValue)
+            {
+                return null;
+            }
+
+            try
+            {
+                if (!kitsuId.HasValue && aniListId.HasValue)
+                {
+                    await _animeListMapper.LoadAnimeListsAsync();
+                    kitsuId = _animeListMapper.GetMappingByAniListId(aniListId.Value)?.kitsu_id;
+                }
+
+                return await _entryDetails.LoadAsync(_config, aniListId, malId, kitsuId, includePeople: true, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error loading details for AniList {AniListId} / MAL {MalId}", aniListId, malId);
+                return null;
+            }
+        }
+
+        private async Task ApplyEntryDetailsAsync(Season season, MetadataResult<Season> result, EntryDetails details, long? tagsAniListId, CancellationToken cancellationToken = default)
+        {
+            season.OfficialRating = details.ParentalRating;
+
+            if (details.Genres.Count > 0)
+            {
+                season.Genres = details.Genres.ToArray();
+            }
+
+            if (details.Studios.Count > 0)
+            {
+                season.Studios = details.Studios.ToArray();
+            }
+
+            if (details.People.Count > 0)
+            {
+                result.People = details.People;
+            }
+
+            // Tags come from AniDB only, through the same filter as the show.
+            if (_config.EnableAniDbTags && tagsAniListId is long id && id <= int.MaxValue)
+            {
+                season.Tags = (await GetSeasonTagsAsync((int)id, cancellationToken)).ToArray();
+            }
         }
 
         // A virtual season (one with no folder of its own) arrives with no path, so the path check
@@ -222,6 +338,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             {
                 return false;
             }
+
 
             if (info.SeriesProviderIds == null || info.SeriesProviderIds.Count == 0)
             {
@@ -243,6 +360,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             {
                 IncludeItemTypes = new[] { BaseItemKind.Series },
                 Recursive = true,
+
                 HasAnyProviderId = providerIds
             };
             var matches = _libraryManager.GetItemList(query).OfType<Series>().ToList();
@@ -265,19 +383,20 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             var idFromInfo = GetAniListIdFromInfo(info);
             if (idFromInfo.HasValue)
             {
-                return await _apiService.GetRootAniListIdAsync(idFromInfo.Value, cancellationToken);
+                return await GetFirstSeasonAniListIdAsync(idFromInfo.Value, cancellationToken);
             }
 
             // 1b) A manual Identify can leave only a MAL/Kitsu/TVDB/IMDb id on the series.
             var mappedId = await ResolveAniListIdFromOtherProviderIdsAsync(info, cancellationToken);
             if (mappedId.HasValue)
             {
-                return await _apiService.GetRootAniListIdAsync(mappedId.Value, cancellationToken);
+                return await GetFirstSeasonAniListIdAsync(mappedId.Value, cancellationToken);
             }
 
             // 2) Try reading parent .plexmatch and mapping via Fribb list
             var seasonPath = info.Path ?? string.Empty;
-            var seriesDir = Directory.GetParent(seasonPath)?.FullName;
+            // A virtual season has no folder; Directory.GetParent throws on an empty path.
+            var seriesDir = string.IsNullOrWhiteSpace(seasonPath) ? null : Directory.GetParent(seasonPath)?.FullName;
             if (string.IsNullOrEmpty(seriesDir))
             {
                 _logger.LogDebug("No parent directory for season path {Path}", seasonPath);
@@ -322,6 +441,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
                 if (mapping == null && plexData.TmdbId.HasValue)
                 {
+
                     mapping = _animeListMapper.GetMappingByTmdbId(plexData.TmdbId.Value);
                 }
 
@@ -342,6 +462,22 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             }
 
             return null;
+        }
+
+        // The first season of the series' TVDB/TMDb series according to the anime-lists API; AniList's PREQUEL walk only when
+        // the API is not configured or has no answer (that walk turns Dragon Ball Super into Dragon Ball Kai).
+        private async Task<int?> GetFirstSeasonAniListIdAsync(long aniListId, CancellationToken cancellationToken)
+        {
+            if (!string.IsNullOrWhiteSpace(_config.EffectiveAnimeListsApiUrl))
+            {
+                var franchise = await _animeListsApiClient.GetFranchiseAsync(_config.EffectiveAnimeListsApiUrl, aniListId, cancellationToken);
+                if (franchise?.FirstSeasonAniListId is long first && first <= int.MaxValue)
+                {
+                    return (int)first;
+                }
+            }
+
+            return await _apiService.GetRootAniListIdAsync(aniListId, cancellationToken);
         }
 
         private async Task<int?> ResolveAniListIdFromOtherProviderIdsAsync(SeasonInfo info, CancellationToken cancellationToken = default)
@@ -395,7 +531,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             }
 
             return aniListId.HasValue
-                ? await _apiService.GetRootAniListIdAsync(aniListId.Value, cancellationToken)
+                ? await GetFirstSeasonAniListIdAsync(aniListId.Value, cancellationToken)
                 : null;
         }
 
@@ -503,7 +639,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
             // Try mapping via .plexmatch
             var seasonPath = info.Path ?? string.Empty;
-            var seriesDir = Directory.GetParent(seasonPath)?.FullName;
+            var seriesDir = string.IsNullOrWhiteSpace(seasonPath) ? null : Directory.GetParent(seasonPath)?.FullName;
             if (string.IsNullOrEmpty(seriesDir))
             {
                 return null;

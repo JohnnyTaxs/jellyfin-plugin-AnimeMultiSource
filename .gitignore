@@ -126,3 +126,4 @@ dist/
 # Release build output
 publish/
 manifest-entry.json
+/tests

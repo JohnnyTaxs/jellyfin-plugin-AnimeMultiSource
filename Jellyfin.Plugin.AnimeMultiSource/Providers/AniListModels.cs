@@ -81,6 +81,43 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
         public int? IdMal { get; set; }
     }
 
+    /// <summary>
+    /// AniList media as fetched for movies: the usual fields plus synonyms (to compare against a folder name) and artwork.
+    /// A separate type so the shared series query and its persisted cache stay untouched.
+    /// </summary>
+    public class AniListMovieMedia : AniListMedia
+    {
+        [JsonPropertyName("synonyms")]
+        public List<string>? Synonyms { get; set; }
+
+        [JsonPropertyName("coverImage")]
+        public new AniListCoverImage? CoverImage { get; set; }
+
+        [JsonPropertyName("bannerImage")]
+        public string? BannerImage { get; set; }
+    }
+
+    public class AniListCoverImage
+    {
+        [JsonPropertyName("extraLarge")]
+        public string? ExtraLarge { get; set; }
+
+        [JsonPropertyName("large")]
+        public string? Large { get; set; }
+    }
+
+    public class AniListMovieResponse
+    {
+        [JsonPropertyName("data")]
+        public AniListMovieData? Data { get; set; }
+    }
+
+    public class AniListMovieData
+    {
+        [JsonPropertyName("Media")]
+        public AniListMovieMedia? Media { get; set; }
+    }
+
     public class AniListTitle
     {
         [JsonPropertyName("romaji")]

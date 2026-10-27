@@ -16,6 +16,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
         private readonly string _personalApiKey;
 
         private const string BaseUrl = "https://webservice.fanart.tv/v3/tv";
+        private const string MovieBaseUrl = "https://webservice.fanart.tv/v3/movies";
 
         public FanartClient(HttpClient httpClient, ILogger logger, string personalApiKey)
         {
@@ -53,6 +54,37 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Failed to parse Fanart.tv response for tvdb {TvdbId}", tvdbId);
+                return null;
+            }
+        }
+
+        /// <summary>Movie artwork, looked up by TMDb id or IMDb id (tt1234567).</summary>
+        public async Task<FanartMovieResponse?> GetMovieAsync(string movieId, CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrWhiteSpace(movieId))
+            {
+                return null;
+            }
+
+            var url = $"{MovieBaseUrl}/{Uri.EscapeDataString(movieId)}?api_key={_personalApiKey}";
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+
+            using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                // 404 is normal: fanart.tv simply has nothing for that film.
+                _logger.LogDebug("Fanart.tv movie request failed for {MovieId} with status {Status}", movieId, response.StatusCode);
+                return null;
+            }
+
+            try
+            {
+                var json = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                return JsonSerializer.Deserialize<FanartMovieResponse>(json, _jsonOptions);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to parse Fanart.tv response for movie {MovieId}", movieId);
                 return null;
             }
         }

@@ -363,6 +363,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 if (value.ValueKind == JsonValueKind.Object)
                 {
                     if (value.TryGetProperty("tv", out var tv))
+
                     {
                         var tvId = ReadTmdbIds(tv).FirstOrDefault();
                         if (tvId > 0)

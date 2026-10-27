@@ -27,6 +27,8 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
         private static DateTime _lastAniDbRequest = DateTime.MinValue;
         private static readonly ConcurrentDictionary<long, AniDbCacheEntry> _aniDbCache = new();
         private static readonly TimeSpan AniDbCacheDuration = TimeSpan.FromDays(5);
+        // AniDB often has no tags yet for a newly released show; that empty answer must not hide the tags for days once they appear.
+        private static readonly TimeSpan AniDbEmptyTagsCacheDuration = TimeSpan.FromHours(6);
         private static readonly object AniDbRateLock = new();
         // AniDB counts requests globally. Serialize the whole request so concurrent metadata and
         // episode-image lookups can't both observe the same "last request" timestamp and burst.
@@ -126,6 +128,186 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
 
             return null;
         }
+
+        // ---- Parental rating fallback ------------------------------------------------------------------------------
+        // The parental rating comes from Jikan (MAL). When Jikan is down, paused, or has no rating for the title, Kitsu's
+        // age rating (looked up by Kitsu id) is used instead, written in Jikan's wording so the two look the same.
+        private static readonly ConcurrentDictionary<long, (DateTimeOffset At, string? Rating)> _kitsuRatingCache = new();
+        private static readonly TimeSpan KitsuRatingCacheDuration = TimeSpan.FromDays(1);
+        private static readonly TimeSpan KitsuRequestTimeout = TimeSpan.FromSeconds(10);
+        private static readonly object KitsuHealthLock = new();
+        private static int _kitsuConsecutiveFailures;
+        private static DateTimeOffset _kitsuPausedUntil = DateTimeOffset.MinValue;
+
+        public async Task<string?> GetKitsuParentalRatingAsync(long? kitsuId)
+        {
+            if (kitsuId is not > 0)
+            {
+                return null;
+            }
+
+            if (_kitsuRatingCache.TryGetValue(kitsuId.Value, out var cached) && DateTimeOffset.UtcNow - cached.At < KitsuRatingCacheDuration)
+            {
+                return cached.Rating;
+            }
+
+            lock (KitsuHealthLock)
+            {
+                if (DateTimeOffset.UtcNow < _kitsuPausedUntil)
+                {
+                    return null;
+                }
+            }
+
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, $"https://kitsu.app/api/edge/anime/{kitsuId}?fields%5Banime%5D=ageRating,ageRatingGuide");
+                request.Headers.Accept.ParseAdd("application/vnd.api+json");
+                using var timeout = new System.Threading.CancellationTokenSource(KitsuRequestTimeout);
+                using var response = await _httpClient.SendAsync(request, timeout.Token);
+
+                if (response.StatusCode == HttpStatusCode.NotFound)
+                {
+                    RecordKitsuResult(true, string.Empty);
+                    _kitsuRatingCache[kitsuId.Value] = (DateTimeOffset.UtcNow, null);
+                    return null;
+                }
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    RecordKitsuResult(false, $"HTTP {(int)response.StatusCode}");
+                    return null;
+                }
+
+                using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+                string? ageRating = null, guide = null;
+                if (document.RootElement.TryGetProperty("data", out var data)
+                    && data.TryGetProperty("attributes", out var attributes))
+                {
+                    ageRating = attributes.TryGetProperty("ageRating", out var r) && r.ValueKind == JsonValueKind.String ? r.GetString() : null;
+                    guide = attributes.TryGetProperty("ageRatingGuide", out var g) && g.ValueKind == JsonValueKind.String ? g.GetString() : null;
+                }
+
+                RecordKitsuResult(true, string.Empty);
+                var rating = KitsuAgeRating.ToJikanStyle(ageRating, guide);
+                _kitsuRatingCache[kitsuId.Value] = (DateTimeOffset.UtcNow, rating);
+                return rating;
+            }
+            catch (Exception ex) when (ex is TaskCanceledException or HttpRequestException or JsonException)
+            {
+                RecordKitsuResult(false, ex is TaskCanceledException ? $"no response within {KitsuRequestTimeout.TotalSeconds:F0} s" : ex.Message);
+                return null;
+            }
+        }
+
+        private void RecordKitsuResult(bool success, string reason)
+        {
+            lock (KitsuHealthLock)
+            {
+                if (success)
+                {
+                    _kitsuConsecutiveFailures = 0;
+                    return;
+                }
+
+                _kitsuConsecutiveFailures++;
+                if (_kitsuConsecutiveFailures < 3)
+                {
+                    _logger.LogWarning("Kitsu age-rating request failed ({Reason}); {Count}/3 before pausing Kitsu", reason, _kitsuConsecutiveFailures);
+                    return;
+                }
+
+                _kitsuPausedUntil = DateTimeOffset.UtcNow + TimeSpan.FromMinutes(10);
+                _kitsuConsecutiveFailures = 0;
+                _logger.LogWarning("Kitsu failed 3 times in a row (last: {Reason}); skipping the Kitsu age-rating fallback until {Until:HH:mm}", reason, _kitsuPausedUntil.ToLocalTime());
+            }
+        }
+
+        // ---- Movies ------------------------------------------------------------------------------------------------
+        // Movies use their own AniList query/model (synonyms + artwork) and in-memory caches, so the series query and
+        // its persisted cache are unaffected.
+        private static readonly ConcurrentDictionary<int, (DateTimeOffset At, AniListMovieMedia Media)> _movieMediaCache = new();
+
+        // AniList can still answer 429 when other software shares the IP: wait as long as it asks and try again.
+        private async Task<HttpResponseMessage> PostAniListWithRetryAsync(StringContent content, string what, CancellationToken cancellationToken)
+        {
+            const int maxAttempts = 3;
+            for (var attempt = 1; ; attempt++)
+            {
+                await EnforceAniListRateLimitAsync(cancellationToken);
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                timeout.CancelAfter(ExternalRequestTimeout);
+                var response = await _httpClient.PostAsync("https://graphql.anilist.co", content, timeout.Token);
+                if (response.StatusCode != HttpStatusCode.TooManyRequests || attempt == maxAttempts)
+                {
+                    return response;
+                }
+
+                var wait = GetRetryAfterDelay(response, TimeSpan.FromSeconds(10 * attempt));
+                wait = AddJitter(wait > TimeSpan.FromSeconds(60) ? TimeSpan.FromSeconds(60) : wait);
+                _logger.LogWarning("AniList rate limited the {What}; retrying in {DelayMs} ms (attempt {Attempt})", what, wait.TotalMilliseconds, attempt);
+                response.Dispose();
+                await Task.Delay(wait, cancellationToken);
+            }
+        }
+
+        public async Task<AniListMovieMedia?> GetAniListMovieMediaAsync(long anilistId, CancellationToken cancellationToken = default)
+        {
+            if (anilistId <= 0 || anilistId > int.MaxValue)
+            {
+                return null;
+            }
+
+            var id = (int)anilistId;
+            if (_movieMediaCache.TryGetValue(id, out var cached) && DateTimeOffset.UtcNow - cached.At < AniListCacheDuration)
+            {
+                return cached.Media;
+            }
+
+            const string query = @"
+                query ($id: Int) {
+                    Media(id: $id, type: ANIME) {
+                        id idMal format duration averageScore genres description status
+                        title { romaji english native }
+                        synonyms
+                        startDate { year month day }
+                        endDate { year month day }
+                        coverImage { extraLarge large }
+                        bannerImage
+                    }
+                }";
+
+            try
+            {
+                var content = new StringContent(JsonSerializer.Serialize(new { query, variables = new { id } }), System.Text.Encoding.UTF8, "application/json");
+
+                using var response = await PostAniListWithRetryAsync(content, $"movie fetch for {anilistId}", cancellationToken);
+                if (!response.IsSuccessStatusCode)
+                {
+                    _logger.LogWarning("AniList movie fetch for {AniListId} returned {StatusCode}", anilistId, response.StatusCode);
+                    return null;
+                }
+
+                var parsed = JsonSerializer.Deserialize<AniListMovieResponse>(await response.Content.ReadAsStringAsync(cancellationToken));
+                var media = parsed?.Data?.Media;
+                if (media != null)
+                {
+                    _movieMediaCache[id] = (DateTimeOffset.UtcNow, media);
+                }
+
+                return media;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error fetching AniList movie data for AniList ID {AniListId}", anilistId);
+                return null;
+            }
+        }
+
 
         public async Task<AniListMedia?> GetAniListAnimeAsync(long anilistId, CancellationToken cancellationToken = default)
         {
@@ -959,8 +1141,9 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 person.ImageUrl = SafeImageUrl(person.ImageUrl);
             }
 
-            return people;
-        }
+            // Fresh copies: the lists above are cached and Jellyfin writes the database id of a saved person back onto the
+            // object it was given (see EntryDetailsLoader.ClonePerson).
+            return people.Select(EntryDetailsLoader.ClonePerson).ToList();        }
 
         private static string? SafeImageUrl(string? url)
         {
@@ -1230,7 +1413,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             EnsurePersistentCacheLoaded();
 
             if (_aniDbCache.TryGetValue(anidbId, out var cached) &&
-                now - cached.CachedAt < AniDbCacheDuration)
+                now - cached.CachedAt < (cached.Tags.Count == 0 ? AniDbEmptyTagsCacheDuration : AniDbCacheDuration))
             {
                 _logger.LogInformation("AniDB cache hit for ID {AniDbId} (age: {Age:F1} minutes)", anidbId, (now - cached.CachedAt).TotalMinutes);
                 return (new List<string>(cached.Tags), cached.MainTitle);
@@ -1697,8 +1880,7 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
             }
         }
 
-        internal static void RecordJikanResult(bool success, string context, string reason, ILogger logger)
-        {
+        internal static void RecordJikanResult(bool success, string context, string reason, ILogger logger)        {
             lock (JikanHealthLock)
             {
                 if (success)
@@ -1710,20 +1892,17 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 _jikanConsecutiveFailures++;
                 if (_jikanConsecutiveFailures < JikanFailuresBeforePause)
                 {
-                    logger.LogWarning("Jikan (MAL) request for {Context} failed ({Reason}); {Count}/{Max} before pausing Jikan",
-                        context, reason, _jikanConsecutiveFailures, JikanFailuresBeforePause);
+                    logger.LogWarning("Jikan (MAL) request for {Context} failed ({Reason}); {Count}/{Max} before pausing Jikan",                        context, reason, _jikanConsecutiveFailures, JikanFailuresBeforePause);
                     return;
                 }
 
                 _jikanPausedUntil = DateTimeOffset.UtcNow + JikanPauseDuration;
                 _jikanConsecutiveFailures = 0;
-                logger.LogWarning("Jikan (MAL) failed {Max} times in a row (last: {Reason}); skipping Jikan until {Until:HH:mm} and using AniList data only",
-                    JikanFailuresBeforePause, reason, _jikanPausedUntil.ToLocalTime());
+                logger.LogWarning("Jikan (MAL) failed {Max} times in a row (last: {Reason}); skipping Jikan until {Until:HH:mm} and using AniList data only",                    JikanFailuresBeforePause, reason, _jikanPausedUntil.ToLocalTime());
             }
         }
 
-        private async Task<HttpResponseMessage?> SendJikanRequestAsync(string url, string context, CancellationToken cancellationToken = default)
-        {
+        private async Task<HttpResponseMessage?> SendJikanRequestAsync(string url, string context, CancellationToken cancellationToken = default)        {
             for (var attempt = 1; attempt <= 3; attempt++)
             {
                 if (IsJikanPaused)
@@ -1746,21 +1925,18 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                 }
                 catch (Exception ex) when (ex is TaskCanceledException or HttpRequestException)
                 {
-                    RecordJikanResult(false, context, ex is TaskCanceledException ? $"no response from Jikan within {JikanRequestTimeout.TotalSeconds:F0} s" : ex.Message, _logger);
-                    return null;
+                    RecordJikanResult(false, context, ex is TaskCanceledException ? $"no response from Jikan within {JikanRequestTimeout.TotalSeconds:F0} s" : ex.Message, _logger);                    return null;
                 }
 
                 if (response.IsSuccessStatusCode)
                 {
-                    RecordJikanResult(true, context, string.Empty, _logger);
-                    return response;
+                    RecordJikanResult(true, context, string.Empty, _logger);                    return response;
                 }
 
                 // 5xx (including 503) means Jikan or MAL behind it is down: waiting won't help.
                 if ((int)response.StatusCode >= 500)
                 {
-                    RecordJikanResult(false, context, $"HTTP {(int)response.StatusCode}", _logger);
-                    response.Dispose();
+                    RecordJikanResult(false, context, $"HTTP {(int)response.StatusCode}", _logger);                    response.Dispose();
                     return null;
                 }
 
@@ -1770,15 +1946,13 @@ namespace Jellyfin.Plugin.AnimeMultiSource.Providers
                     var backoff = AddJitter(retryAfter > TimeSpan.FromSeconds(30) ? TimeSpan.FromSeconds(30) : retryAfter);
                     _logger.LogWarning("Jikan rate limited for {Context}; backing off {DelayMs} ms before retry {Attempt}", context, backoff.TotalMilliseconds, attempt);
                     response.Dispose();
-                    await Task.Delay(backoff, cancellationToken);
-                    continue;
+                    await Task.Delay(backoff, cancellationToken);                    continue;
                 }
 
                 return response;
             }
 
-            RecordJikanResult(false, context, "still rate limited after retries", _logger);
-            return null;
+            RecordJikanResult(false, context, "still rate limited after retries", _logger);            return null;
         }
 
         private TimeSpan AddJitter(TimeSpan baseDelay)
