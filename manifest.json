@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/JohnnyTaxs/jellyfin-plugin-AnimeMultiSource/main/media/logo.png",
     "versions": [
       {
+        "version": "1.2.0.1",
+        "changelog": "https://github.com/JohnnyTaxs/jellyfin-plugin-AnimeMultiSource/releases/tag/v1.2.0.1",
+        "targetAbi": "12.0.0.0",
+        "sourceUrl": "https://github.com/JohnnyTaxs/jellyfin-plugin-AnimeMultiSource/releases/download/v1.2.0.1/AnimeMultiSource_v1.2.0.1.zip",
+        "checksum": "9F54DC3B5B5AF17BFF629BA3C713795B",
+        "timestamp": "2026-10-27T12:51:43Z"
+      },
+      {
         "version": "1.2.0.0",
         "changelog": "https://github.com/JohnnyTaxs/jellyfin-plugin-AnimeMultiSource/releases/tag/v1.2.0.0",
         "targetAbi": "12.0.0.0",
